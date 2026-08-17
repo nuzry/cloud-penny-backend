@@ -90,7 +90,7 @@ export const handler = async (event) => {
         putStatement = {
           Sid: putObjSid,
           Effect: "Allow",
-          Principal: { Service: "billingreports.amazonaws.com" },
+          Principal: { Service: "bcm-data-exports.amazonaws.com" },
           Action: "s3:PutObject",
           Resource: `arn:aws:s3:::${BUCKET}/*`,
           Condition: {

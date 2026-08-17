@@ -20,7 +20,11 @@
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 10,
-    "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
+    "environment": { 
+      "TENANTS_TABLE": "cloudpenny-tenants",
+      "COGNITO_USER_POOL_ID": "ap-southeast-1_yMWin06rf",
+      "CENTRAL_CURS_BUCKET": "cloudpenny-central-curs-dev"
+    },
     "routes": [
       { "method": "PUT",    "path": "/api/v1/clients/me" },
       { "method": "DELETE", "path": "/api/v1/clients/me" }

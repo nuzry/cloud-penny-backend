@@ -1,7 +1,10 @@
 // lambdas/deleteAccount/index.js
 import { CognitoIdentityProviderClient, AdminDeleteUserCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, DeleteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { S3Client, GetBucketPolicyCommand, PutBucketPolicyCommand } from "@aws-sdk/client-s3";
+
+const s3 = new S3Client({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
 
 const cognito = new CognitoIdentityProviderClient({});
 const dynamo  = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" }));
@@ -47,6 +50,47 @@ export const handler = async (event) => {
   }
 
   console.log("TENANT_ID:", tenantId, "USERNAME:", username);
+
+  // Step 0 - Fetch the user's AWS Account ID to clean up S3 Bucket Policy
+  let awsAccountId = null;
+  try {
+    const res = await dynamo.send(new GetCommand({ TableName: TABLE, Key: { tenantId } }));
+    awsAccountId = res.Item?.awsAccountId;
+  } catch (err) {
+    console.warn("Failed to fetch tenant record for S3 cleanup:", err.message);
+  }
+
+  const bucket = process.env.CENTRAL_CURS_BUCKET;
+  if (awsAccountId && bucket) {
+    try {
+      const policyData = await s3.send(new GetBucketPolicyCommand({ Bucket: bucket }));
+      const policyObj = JSON.parse(policyData.Policy);
+      
+      const putObjSid = "AllowClientCURDelivery";
+      const statement = policyObj.Statement.find(s => s.Sid === putObjSid);
+      
+      if (statement?.Condition?.StringEquals?.["aws:SourceAccount"]) {
+        let accounts = statement.Condition.StringEquals["aws:SourceAccount"];
+        if (!Array.isArray(accounts)) accounts = [accounts];
+        
+        accounts = accounts.filter(acc => acc !== awsAccountId);
+        
+        if (accounts.length === 0) {
+           policyObj.Statement = policyObj.Statement.filter(s => s.Sid !== putObjSid);
+        } else {
+           statement.Condition.StringEquals["aws:SourceAccount"] = accounts;
+        }
+        
+        await s3.send(new PutBucketPolicyCommand({
+          Bucket: bucket,
+          Policy: JSON.stringify(policyObj)
+        }));
+        console.log("Removed AWS Account ID from S3 Bucket Policy:", awsAccountId);
+      }
+    } catch (err) {
+      console.warn("Failed to remove S3 bucket policy entry (moving on):", err.message);
+    }
+  }
 
   // Step 1 — Delete Cognito user first. This revokes login access
   // immediately, so even if the DynamoDB delete below fails, the
