@@ -108,7 +108,7 @@ export const handler = async (event) => {
         Effect: "Allow",
         Principal: { Service: "bcm-data-exports.amazonaws.com" },
         Action: "s3:PutObject",
-        Resource: `arn:aws:s3:::${BUCKET}/${tenantId}/*`,
+        Resource: `arn:aws:s3:::${BUCKET}/*`,
         Condition: {
           ArnLike: {
             "aws:SourceArn": `arn:aws:bcm-data-exports:us-east-1:${awsAccountId}:export/*`
@@ -131,9 +131,26 @@ export const handler = async (event) => {
     }
   }
 
+  const shortId = tenantId.substring(0, 8);
+  const ts = Date.now().toString(36).toUpperCase();
+  const exportName = `CloudPenny-${shortId}-${ts}`;
+  const templateURL = `https://cloud-penny-bucket.s3.${process.env.AWS_REGION ?? "ap-southeast-1"}.amazonaws.com/cloud-formation/cur-setup.yml`;
+  
+  const cfUrl = `https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review` + 
+    `?templateURL=${templateURL}` +
+    `&stackName=CloudPenny-Export-${shortId}` +
+    `&param_TenantId=${tenantId}` +
+    `&param_S3Prefix=${awsAccountId}` +
+    `&param_CentralBucketName=${BUCKET}` +
+    `&param_CentralBucketRegion=${process.env.AWS_REGION ?? "ap-southeast-1"}` +
+    `&param_ExportName=${exportName}`;
+
   return response(200, {
     success: true,
     message: "AWS Account ID saved and policy updated.",
-    data: { connectionStatus: "PENDING" }
+    data: { 
+      connectionStatus: "PENDING",
+      cfUrl: cfUrl
+    }
   });
 };

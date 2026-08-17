@@ -41,11 +41,30 @@ export const handler = async (event) => {
     return response(404, { success: false, error: "Client record not found" });
   }
 
+  const data = {
+    awsAccountId: item.awsAccountId || null,
+    connectionStatus: item.connectionStatus || "UNCONNECTED"
+  };
+
+  if (data.connectionStatus === "PENDING" && item.awsAccountId) {
+    const shortId = tenantId.substring(0, 8);
+    const ts = Date.now().toString(36).toUpperCase();
+    const exportName = `CloudPenny-${shortId}-${ts}`;
+    const BUCKET = process.env.CENTRAL_CURS_BUCKET || "cloudpenny-central-curs-dev";
+    const templateURL = `https://cloud-penny-bucket.s3.${process.env.AWS_REGION ?? "ap-southeast-1"}.amazonaws.com/cloud-formation/cur-setup.yml`;
+    
+    data.cfUrl = `https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review` + 
+      `?templateURL=${templateURL}` +
+      `&stackName=CloudPenny-Export-${shortId}` +
+      `&param_TenantId=${tenantId}` +
+      `&param_S3Prefix=${item.awsAccountId}` +
+      `&param_CentralBucketName=${BUCKET}` +
+      `&param_CentralBucketRegion=${process.env.AWS_REGION ?? "ap-southeast-1"}` +
+      `&param_ExportName=${exportName}`;
+  }
+
   return response(200, {
     success: true,
-    data: {
-      awsAccountId: item.awsAccountId || null,
-      connectionStatus: item.connectionStatus || "UNCONNECTED"
-    }
+    data
   });
 };
