@@ -97,11 +97,12 @@ resource "aws_lambda_function" "functions" {
     mode = "Active"
   }
 
+  description   = try(each.value.description, "")
+
   # ── Tags ────────────────────────────────────────────────────
   # provider default_tags adds project/environment/managed_by automatically.
   tags = {
     function    = each.key
-    description = try(each.value.description, "")
   }
 
   depends_on = [aws_cloudwatch_log_group.lambda_logs]
