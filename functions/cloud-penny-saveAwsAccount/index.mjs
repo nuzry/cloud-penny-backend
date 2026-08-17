@@ -68,7 +68,15 @@ export const handler = async (event) => {
     return response(500, { success: false, error: "Failed to save account details" });
   }
 
-  // 2. Update S3 Bucket Policy
+  // 2. Update S3 Bucket Policy — add a per-tenant statement scoped to their prefix.
+  //
+  //  Structure:
+  //    Sid:      "tenant-{awsAccountId}"
+  //    Resource: s3://{BUCKET}/{tenantId}/*   ← only their folder
+  //    Condition: their BCMDataExports ARN + their SourceAccount
+  //
+  //  This means each client can only write into their own prefix,
+  //  and no other account's exports can land in the wrong folder.
   if (BUCKET) {
     try {
       let policyObj;
@@ -83,71 +91,43 @@ export const handler = async (event) => {
         }
       }
 
-      // We might have legacy statements we should remove first to avoid duplication
-      policyObj.Statement = policyObj.Statement.filter(s => 
-        s.Sid !== "AllowBillingReports" && s.Sid !== "AllowBillingReportsPutObject"
+      // Remove legacy/generic statements and any stale entry for this account
+      policyObj.Statement = policyObj.Statement.filter(s =>
+        s.Sid !== "AllowBillingReports" &&
+        s.Sid !== "AllowBillingReportsPutObject" &&
+        s.Sid !== "AllowCURGetAclPolicy" &&
+        s.Sid !== "AllowCURPutObject" &&
+        s.Sid !== "AllowBCMDataExports" &&
+        s.Sid !== "EnableAWSDataExportsToWriteToS3" &&
+        s.Sid !== `tenant-${awsAccountId}`
       );
 
-      // Helper to update or create a statement
-      const updateStatement = (sid, action, resource) => {
-        let stmt = policyObj.Statement.find(s => s.Sid === sid);
-        if (!stmt) {
-          stmt = {
-            Sid: sid,
-            Effect: "Allow",
-            Principal: { Service: "billingreports.amazonaws.com" },
-            Action: action,
-            Resource: resource,
-            Condition: {
-              StringLike: {
-                "aws:SourceAccount": [],
-                "aws:SourceArn": []
-              }
-            }
-          };
-          policyObj.Statement.push(stmt);
+      // Add a fresh, tightly-scoped statement for this tenant
+      policyObj.Statement.push({
+        Sid: `tenant-${awsAccountId}`,
+        Effect: "Allow",
+        Principal: { Service: "bcm-data-exports.amazonaws.com" },
+        Action: "s3:PutObject",
+        Resource: `arn:aws:s3:::${BUCKET}/${tenantId}/*`,
+        Condition: {
+          ArnLike: {
+            "aws:SourceArn": `arn:aws:bcm-data-exports:us-east-1:${awsAccountId}:export/*`
+          },
+          StringEquals: {
+            "aws:SourceAccount": awsAccountId
+          }
         }
-
-        // Migrate old generic statements or StringEquals to StringLike
-        if (!stmt.Condition) stmt.Condition = {};
-        if (stmt.Condition.StringEquals) {
-            stmt.Condition.StringLike = stmt.Condition.StringEquals;
-            delete stmt.Condition.StringEquals;
-        }
-        if (!stmt.Condition.StringLike) stmt.Condition.StringLike = { "aws:SourceAccount": [], "aws:SourceArn": [] };
-
-        let accounts = stmt.Condition.StringLike["aws:SourceAccount"] || [];
-        if (!Array.isArray(accounts)) accounts = [accounts];
-        
-        let arns = stmt.Condition.StringLike["aws:SourceArn"] || [];
-        if (!Array.isArray(arns)) arns = [arns];
-        
-        if (!accounts.includes(awsAccountId)) {
-          accounts.push(awsAccountId);
-        }
-        
-        const expectedArn = `arn:aws:cur:us-east-1:${awsAccountId}:definition/*`;
-        if (!arns.includes(expectedArn)) {
-          arns.push(expectedArn);
-        }
-        
-        stmt.Condition.StringLike["aws:SourceAccount"] = accounts;
-        stmt.Condition.StringLike["aws:SourceArn"] = arns;
-      };
-
-      updateStatement("AllowCURGetAclPolicy", ["s3:GetBucketAcl", "s3:GetBucketPolicy"], `arn:aws:s3:::${BUCKET}`);
-      updateStatement("AllowCURPutObject", "s3:PutObject", `arn:aws:s3:::${BUCKET}/*`);
+      });
 
       await s3.send(new PutBucketPolicyCommand({
         Bucket: BUCKET,
         Policy: JSON.stringify(policyObj)
       }));
-      console.log("BUCKET_POLICY_UPDATED for account:", awsAccountId);
+      console.log(`BUCKET_POLICY_UPDATED: tenant-${awsAccountId} → s3://${BUCKET}/${tenantId}/*`);
 
     } catch (err) {
       console.error("S3_POLICY_UPDATE_ERROR:", err.message);
-      // We don't fail the request here, but log it so ops can fix it.
-      // The user still saved their account ID successfully in DB.
+      // Non-fatal — DB record is saved, ops can fix policy manually if needed.
     }
   }
 

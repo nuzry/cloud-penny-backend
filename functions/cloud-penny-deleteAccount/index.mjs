@@ -65,27 +65,19 @@ export const handler = async (event) => {
     try {
       const policyData = await s3.send(new GetBucketPolicyCommand({ Bucket: bucket }));
       const policyObj = JSON.parse(policyData.Policy);
-      
-      const putObjSid = "AllowClientCURDelivery";
-      const statement = policyObj.Statement.find(s => s.Sid === putObjSid);
-      
-      if (statement?.Condition?.StringEquals?.["aws:SourceAccount"]) {
-        let accounts = statement.Condition.StringEquals["aws:SourceAccount"];
-        if (!Array.isArray(accounts)) accounts = [accounts];
-        
-        accounts = accounts.filter(acc => acc !== awsAccountId);
-        
-        if (accounts.length === 0) {
-           policyObj.Statement = policyObj.Statement.filter(s => s.Sid !== putObjSid);
-        } else {
-           statement.Condition.StringEquals["aws:SourceAccount"] = accounts;
-        }
-        
+
+      // Remove the per-tenant statement (Sid: "tenant-{awsAccountId}")
+      const before = policyObj.Statement.length;
+      policyObj.Statement = policyObj.Statement.filter(s => s.Sid !== `tenant-${awsAccountId}`);
+
+      if (policyObj.Statement.length < before) {
         await s3.send(new PutBucketPolicyCommand({
           Bucket: bucket,
           Policy: JSON.stringify(policyObj)
         }));
-        console.log("Removed AWS Account ID from S3 Bucket Policy:", awsAccountId);
+        console.log(`BUCKET_POLICY_REVOKED: tenant-${awsAccountId}`);
+      } else {
+        console.log(`BUCKET_POLICY_NO_ENTRY_FOUND for tenant-${awsAccountId}`);
       }
     } catch (err) {
       console.warn("Failed to remove S3 bucket policy entry (moving on):", err.message);
