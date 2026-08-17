@@ -1,0 +1,118 @@
+name: "Terraform Deploy"
+
+# ─────────────────────────────────────────────────────────────
+# Two deployment paths:
+#
+#   1. Automatic: push to main → deploy to dev
+#   2. Manual:    workflow_dispatch → choose dev | staging | prod
+#
+# Production deploys require the 'prod' GitHub Actions environment,
+# which you should configure with required reviewers in
+# Settings → Environments → prod.
+# ─────────────────────────────────────────────────────────────
+on:
+  push:
+    branches: [main]
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: dev
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+permissions:
+  contents: read
+  id-token: write  # for OIDC if you switch to role-based auth later
+
+env:
+  TF_VERSION:   "1.9.5"
+  NODE_VERSION: "20"
+  TF_DIR:       "infra"
+
+jobs:
+  deploy:
+    name: "Deploy → ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'dev' }}"
+    runs-on: ubuntu-latest
+
+    # Use the correct GitHub Actions environment for secret scoping
+    # and optional manual approval (configure in Settings → Environments)
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || 'dev' }}
+
+    steps:
+      # ── 1. Resolve target environment ─────────────────────
+      - name: Set environment name
+        id: env
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "name=${{ inputs.environment }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 2. Source code ────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 3. Node.js (for zip script) ───────────────────────
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # ── 4. Build Lambda artifacts ─────────────────────────
+      - name: Zip Lambda functions → dist/
+        run: npm run zip
+
+      # ── 5. AWS credentials ────────────────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      # ── 6. Terraform setup ────────────────────────────────
+      - name: Setup Terraform ${{ env.TF_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false  # not needed for apply
+
+      # ── 7. Init ───────────────────────────────────────────
+      - name: Terraform init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ secrets.TF_STATE_KEY_PREFIX }}/${{ steps.env.outputs.name }}/terraform.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"
+        working-directory: ${{ env.TF_DIR }}
+
+      # ── 8. Plan (saved artifact for audit) ────────────────
+      - name: Terraform plan
+        run: |
+          terraform plan \
+            -var="environment=${{ steps.env.outputs.name }}" \
+            -out=tfplan \
+            -no-color
+        working-directory: ${{ env.TF_DIR }}
+
+      # ── 9. Apply ──────────────────────────────────────────
+      - name: Terraform apply
+        run: terraform apply -auto-approve tfplan
+        working-directory: ${{ env.TF_DIR }}
+
+      # ── 10. Show outputs ──────────────────────────────────
+      - name: Terraform outputs
+        run: terraform output
+        working-directory: ${{ env.TF_DIR }}

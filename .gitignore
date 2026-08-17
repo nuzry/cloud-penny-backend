@@ -1,0 +1,39 @@
+# ── Terraform ──────────────────────────────────────────────
+# Local state (never commit — remote state is in S3)
+infra/*.tfstate
+infra/*.tfstate.backup
+
+# Terraform plugin cache & temp files
+infra/.terraform/
+infra/override.tf
+infra/override.tf.json
+infra/.terraform.tfvars
+
+# NOTE: infra/.terraform.lock.hcl SHOULD be committed (reproducible provider versions)
+
+# Crash logs
+crash.log
+crash.*.log
+
+# ── Dist (zipped Lambda artifacts) ─────────────────────────
+dist/
+
+# ── Node ────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# ── Generated files ─────────────────────────────────────────
+# Auto-generated import script (run node scripts/import-existing.js to regenerate)
+import.sh
+
+# ── Environment / Secrets ───────────────────────────────────
+.env
+.env.*
+*.tfvars
+!example.tfvars
+
+# ── OS ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp

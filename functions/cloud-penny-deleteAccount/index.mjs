@@ -1,0 +1,97 @@
+// lambdas/deleteAccount/index.js
+import { CognitoIdentityProviderClient, AdminDeleteUserCommand } from "@aws-sdk/client-cognito-identity-provider";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, DeleteCommand } from "@aws-sdk/lib-dynamodb";
+
+const cognito = new CognitoIdentityProviderClient({});
+const dynamo  = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" }));
+
+const TABLE       = process.env.TENANTS_TABLE ?? "cloudpenny-tenants";
+const USER_POOL_ID = process.env.COGNITO_USER_POOL_ID;
+
+const response = (statusCode, body) => ({
+  statusCode,
+  headers: {
+    "Content-Type":                "application/json",
+    "Access-Control-Allow-Origin": "*"
+  },
+  body: JSON.stringify(body)
+});
+
+const extractTenantId = (event) =>
+  event?.requestContext?.authorizer?.jwt?.claims?.sub ??
+  event?.requestContext?.authorizer?.claims?.sub ??
+  null;
+
+// cognito:username is the actual Username Cognito needs for AdminDeleteUser.
+// Falls back to sub, since many pools are configured with sub === username.
+const extractUsername = (event) =>
+  event?.requestContext?.authorizer?.jwt?.claims?.["cognito:username"] ??
+  event?.requestContext?.authorizer?.claims?.["cognito:username"] ??
+  extractTenantId(event);
+
+export const handler = async (event) => {
+  console.log("EVENT_PRINT:", JSON.stringify(event, null, 2));
+
+  const tenantId = extractTenantId(event);
+  const username  = extractUsername(event);
+
+  if (!tenantId || !username) {
+    console.warn("UNAUTHORIZED: No sub claim found in token");
+    return response(401, { success: false, error: "Unauthorized — invalid or missing token" });
+  }
+
+  if (!USER_POOL_ID) {
+    console.error("CONFIG_ERROR: COGNITO_USER_POOL_ID env var is not set");
+    return response(500, { success: false, error: "Server misconfiguration — please contact support" });
+  }
+
+  console.log("TENANT_ID:", tenantId, "USERNAME:", username);
+
+  // Step 1 — Delete Cognito user first. This revokes login access
+  // immediately, so even if the DynamoDB delete below fails, the
+  // account is no longer usable and can be cleaned up safely later.
+  try {
+    await cognito.send(new AdminDeleteUserCommand({
+      UserPoolId: USER_POOL_ID,
+      Username:   username
+    }));
+    console.log("COGNITO_DELETE_SUCCESS:", tenantId);
+  } catch (err) {
+    if (err.name === "UserNotFoundException") {
+      // Already deleted from Cognito — proceed to clean up the DynamoDB
+      // record rather than blocking the user on a stale account.
+      console.warn("COGNITO_USER_ALREADY_DELETED:", tenantId);
+    } else {
+      console.error("COGNITO_DELETE_ERROR:", err.name, err.message);
+      return response(500, { success: false, error: "Failed to delete account — please try again" });
+    }
+  }
+
+  // Step 2 — Delete the tenant record from DynamoDB.
+  try {
+    await dynamo.send(new DeleteCommand({
+      TableName: TABLE,
+      Key:       { tenantId }
+    }));
+    console.log("DYNAMODB_DELETE_SUCCESS:", tenantId);
+  } catch (err) {
+    // Cognito user is already gone at this point, so the account is
+    // inaccessible either way — but the orphaned record needs manual
+    // cleanup since we can no longer retry via this tenant's own token.
+    console.error("DYNAMODB_DELETE_FAILED — MANUAL INTERVENTION REQUIRED:", {
+      tenantId,
+      username,
+      error: err.message
+    });
+    return response(500, {
+      success: false,
+      error: "Account access was removed, but cleanup is incomplete — please contact support"
+    });
+  }
+
+  return response(200, {
+    success: true,
+    message: "Account deleted successfully"
+  });
+};

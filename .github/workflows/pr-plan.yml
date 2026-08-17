@@ -1,0 +1,164 @@
+name: "Terraform Plan (PR)"
+
+# ─────────────────────────────────────────────────────────────
+# Triggers on any pull request targeting main.
+# Posts a sticky Terraform plan comment on the PR.
+# ─────────────────────────────────────────────────────────────
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents:      read
+  pull-requests: write  # needed to post/update PR comments
+  id-token:      write  # if using OIDC instead of long-lived keys
+
+env:
+  TF_VERSION:   "1.9.5"
+  NODE_VERSION: "20"
+  TF_DIR:       "infra"
+
+jobs:
+  plan:
+    name: "Plan — dev"
+    runs-on: ubuntu-latest
+    # Pin to the 'dev' GitHub Actions environment so you can
+    # scope secret access if needed (Settings → Environments).
+    environment: dev
+
+    steps:
+      # ── 1. Source code ────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Node.js (for zip script) ───────────────────────
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # ── 3. Build Lambda artifacts ─────────────────────────
+      - name: Zip Lambda functions → dist/
+        run: npm run zip
+
+      # ── 4. AWS credentials ────────────────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      # ── 5. Terraform setup ────────────────────────────────
+      - name: Setup Terraform ${{ env.TF_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: true  # enables steps.<id>.outputs.stdout
+
+      # ── 6. Format check ───────────────────────────────────
+      - name: Terraform fmt
+        id: fmt
+        run: terraform fmt -check -recursive
+        working-directory: ${{ env.TF_DIR }}
+        continue-on-error: true
+
+      # ── 7. Init (uses S3 backend from secrets) ────────────
+      - name: Terraform init
+        id: init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ secrets.TF_STATE_KEY_PREFIX }}/dev/terraform.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_LOCK_TABLE }}"
+        working-directory: ${{ env.TF_DIR }}
+
+      # ── 8. Validate ───────────────────────────────────────
+      - name: Terraform validate
+        id: validate
+        run: terraform validate -no-color
+        working-directory: ${{ env.TF_DIR }}
+
+      # ── 9. Plan ───────────────────────────────────────────
+      - name: Terraform plan
+        id: plan
+        run: terraform plan -no-color -var="environment=dev"
+        working-directory: ${{ env.TF_DIR }}
+        continue-on-error: true   # we fail explicitly below so the comment always posts
+
+      # ── 10. Post plan as PR comment ───────────────────────
+      - name: Post plan comment
+        uses: actions/github-script@v7
+        env:
+          PLAN_STDOUT: ${{ steps.plan.outputs.stdout }}
+          PLAN_STDERR: ${{ steps.plan.outputs.stderr }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { PLAN_STDOUT, PLAN_STDERR } = process.env;
+            const planOutput = (PLAN_STDOUT || PLAN_STDERR || 'No output captured').slice(0, 60000);
+            const truncated  = (PLAN_STDOUT || '').length > 60000;
+
+            const fmtBadge      = '${{ steps.fmt.outcome }}'      === 'success' ? '✅' : '❌';
+            const validateBadge = '${{ steps.validate.outcome }}' === 'success' ? '✅' : '❌';
+            const planBadge     = '${{ steps.plan.outcome }}'     === 'success' ? '✅' : '⚠️';
+
+            const body = [
+              `## 🏗️ Terraform Plan — \`dev\``,
+              ``,
+              `| Check | Result |`,
+              `|-------|--------|`,
+              `| Format \`terraform fmt\` | ${fmtBadge} ${{ steps.fmt.outcome }} |`,
+              `| Validate | ${validateBadge} ${{ steps.validate.outcome }} |`,
+              `| Plan | ${planBadge} ${{ steps.plan.outcome }} |`,
+              ``,
+              `<details>`,
+              `<summary>📄 Show Terraform Plan Output${truncated ? ' (truncated)' : ''}</summary>`,
+              ``,
+              `\`\`\`hcl`,
+              planOutput,
+              `\`\`\``,
+              `</details>`,
+              ``,
+              `> 🔁 Pushed by @${{ github.actor }} · commit \`${{ github.sha }}}\``,
+              `> ⚠️ This plan is for **dev** only. Production deploys require a manual workflow dispatch.`,
+            ].join('\n');
+
+            // Find existing bot comment to update (sticky behaviour)
+            const { data: comments } = await github.rest.issues.listComments({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const existing = comments.find(
+              c => c.user.type === 'Bot' && c.body.includes('🏗️ Terraform Plan')
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner:      context.repo.owner,
+                repo:       context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner:        context.repo.owner,
+                repo:         context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      # ── 11. Fail the job if plan failed ──────────────────
+      - name: Fail if plan had errors
+        if: steps.plan.outcome == 'failure'
+        run: |
+          echo "❌ terraform plan exited with errors — see comment above"
+          exit 1
