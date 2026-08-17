@@ -52,3 +52,9 @@ variable "lambda_runtime" {
   type        = string
   default     = "nodejs20.x"
 }
+
+variable "central_curs_bucket_name" {
+  description = "Name of the central S3 bucket for receiving client CUR reports."
+  type        = string
+  default     = "cloudpenny-central-curs"
+}

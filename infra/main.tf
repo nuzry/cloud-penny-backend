@@ -46,6 +46,94 @@ resource "aws_cloudwatch_log_group" "lambda_logs" {
 
 
 # ═══════════════════════════════════════════════════════════
+# CENTRAL CUR S3 BUCKET
+# ═══════════════════════════════════════════════════════════
+
+resource "aws_s3_bucket" "central_curs" {
+  bucket = "${var.central_curs_bucket_name}-${var.environment}"
+
+  # tags inherited from provider
+}
+
+resource "aws_s3_bucket_versioning" "central_curs" {
+  bucket = aws_s3_bucket.central_curs.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "central_curs" {
+  bucket = aws_s3_bucket.central_curs.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "central_curs" {
+  bucket                  = aws_s3_bucket.central_curs.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_policy" "central_curs" {
+  bucket = aws_s3_bucket.central_curs.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowBillingReports"
+        Effect = "Allow"
+        Principal = {
+          Service = "billingreports.amazonaws.com"
+        }
+        Action = [
+          "s3:GetBucketAcl",
+          "s3:GetBucketPolicy"
+        ]
+        Resource = aws_s3_bucket.central_curs.arn
+      }
+      # The PutObject permissions will be managed dynamically by the Lambda function
+      # to whitelist specific client AWS Account IDs using aws:SourceAccount.
+    ]
+  })
+
+  # Ignore changes to the policy made outside Terraform (e.g., by the Lambda function)
+  lifecycle {
+    ignore_changes = [policy]
+  }
+}
+
+# Allow Lambda execution role to read from and modify the bucket policy of the central CUR bucket
+resource "aws_iam_role_policy" "lambda_s3_access" {
+  name = "${var.project_name}-lambda-s3-access-${var.environment}"
+  role = data.aws_iam_role.lambda_role.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetBucketPolicy",
+          "s3:PutBucketPolicy",
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.central_curs.arn,
+          "${aws_s3_bucket.central_curs.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+
+# ═══════════════════════════════════════════════════════════
 # LAMBDA FUNCTIONS — one per entry in functions.json
 # ═══════════════════════════════════════════════════════════
 

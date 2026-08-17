@@ -40,27 +40,33 @@
     ]
   },
   {
-    "name": "cloud-penny-saveArn",
-    "description": "Save AWS role ARN",
-    "aws_name_override": "cloud-penny-saveArn",
+    "name": "cloud-penny-saveAwsAccount",
+    "description": "Save AWS Account ID and whitelist S3 bucket policy",
+    "aws_name_override": "cloud-penny-saveAwsAccount",
     "handler": "index.handler",
     "runtime": "nodejs20.x",
     "memory": 128,
-    "timeout": 10,
-    "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
+    "timeout": 15,
+    "environment": { 
+      "TENANTS_TABLE": "cloudpenny-tenants",
+      "CENTRAL_CURS_BUCKET": "cloudpenny-central-curs-dev" 
+    },
     "routes": [
       { "method": "POST", "path": "/api/v1/aws-connection" }
     ]
   },
   {
-    "name": "cloud-penny-verifyArnRole",
-    "description": "Verify AWS role ARN connection",
-    "aws_name_override": "cloud-penny-verifyArnRole",
+    "name": "cloud-penny-verifyAwsAccount",
+    "description": "Verify CUR delivery to central S3 bucket",
+    "aws_name_override": "cloud-penny-verifyAwsAccount",
     "handler": "index.handler",
     "runtime": "nodejs20.x",
     "memory": 128,
-    "timeout": 10,
-    "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
+    "timeout": 15,
+    "environment": { 
+      "TENANTS_TABLE": "cloudpenny-tenants",
+      "CENTRAL_CURS_BUCKET": "cloudpenny-central-curs-dev" 
+    },
     "routes": [
       { "method": "POST", "path": "/api/v1/aws-connection/verify" }
     ]
