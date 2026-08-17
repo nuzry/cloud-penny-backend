@@ -88,7 +88,7 @@ resource "aws_s3_bucket_policy" "central_curs" {
         Sid    = "AllowBillingReports"
         Effect = "Allow"
         Principal = {
-          Service = "bcm-data-exports.amazonaws.com"
+          Service = "billingreports.amazonaws.com"
         }
         Action = [
           "s3:GetBucketAcl",
