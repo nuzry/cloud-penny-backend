@@ -83,46 +83,66 @@ export const handler = async (event) => {
         }
       }
 
-      const putObjSid = "AllowBillingReportsPutObject";
-      let putStatement = policyObj.Statement.find(s => s.Sid === putObjSid);
-      
-      if (!putStatement) {
-        putStatement = {
-          Sid: putObjSid,
-          Effect: "Allow",
-          Principal: { Service: "billingreports.amazonaws.com" },
-          Action: "s3:PutObject",
-          Resource: `arn:aws:s3:::${BUCKET}/*`,
-          Condition: {
-            StringEquals: {
-              "aws:SourceAccount": []
+      // We might have legacy statements we should remove first to avoid duplication
+      policyObj.Statement = policyObj.Statement.filter(s => 
+        s.Sid !== "AllowBillingReports" && s.Sid !== "AllowBillingReportsPutObject"
+      );
+
+      // Helper to update or create a statement
+      const updateStatement = (sid, action, resource) => {
+        let stmt = policyObj.Statement.find(s => s.Sid === sid);
+        if (!stmt) {
+          stmt = {
+            Sid: sid,
+            Effect: "Allow",
+            Principal: { Service: "billingreports.amazonaws.com" },
+            Action: action,
+            Resource: resource,
+            Condition: {
+              StringLike: {
+                "aws:SourceAccount": [],
+                "aws:SourceArn": []
+              }
             }
-          }
-        };
-        policyObj.Statement.push(putStatement);
-      }
+          };
+          policyObj.Statement.push(stmt);
+        }
 
-      // Ensure aws:SourceAccount exists
-      if (!putStatement.Condition) putStatement.Condition = {};
-      if (!putStatement.Condition.StringEquals) putStatement.Condition.StringEquals = {};
-      
-      let sourceAccounts = putStatement.Condition.StringEquals["aws:SourceAccount"] || [];
-      if (!Array.isArray(sourceAccounts)) {
-        sourceAccounts = [sourceAccounts];
-      }
+        // Migrate old generic statements or StringEquals to StringLike
+        if (!stmt.Condition) stmt.Condition = {};
+        if (stmt.Condition.StringEquals) {
+            stmt.Condition.StringLike = stmt.Condition.StringEquals;
+            delete stmt.Condition.StringEquals;
+        }
+        if (!stmt.Condition.StringLike) stmt.Condition.StringLike = { "aws:SourceAccount": [], "aws:SourceArn": [] };
 
-      if (!sourceAccounts.includes(awsAccountId)) {
-        sourceAccounts.push(awsAccountId);
-        putStatement.Condition.StringEquals["aws:SourceAccount"] = sourceAccounts;
+        let accounts = stmt.Condition.StringLike["aws:SourceAccount"] || [];
+        if (!Array.isArray(accounts)) accounts = [accounts];
+        
+        let arns = stmt.Condition.StringLike["aws:SourceArn"] || [];
+        if (!Array.isArray(arns)) arns = [arns];
+        
+        if (!accounts.includes(awsAccountId)) {
+          accounts.push(awsAccountId);
+        }
+        
+        const expectedArn = `arn:aws:cur:us-east-1:${awsAccountId}:definition/*`;
+        if (!arns.includes(expectedArn)) {
+          arns.push(expectedArn);
+        }
+        
+        stmt.Condition.StringLike["aws:SourceAccount"] = accounts;
+        stmt.Condition.StringLike["aws:SourceArn"] = arns;
+      };
 
-        await s3.send(new PutBucketPolicyCommand({
-          Bucket: BUCKET,
-          Policy: JSON.stringify(policyObj)
-        }));
-        console.log("BUCKET_POLICY_UPDATED for account:", awsAccountId);
-      } else {
-        console.log("BUCKET_POLICY_UNCHANGED: account already whitelisted");
-      }
+      updateStatement("AllowCURGetAclPolicy", ["s3:GetBucketAcl", "s3:GetBucketPolicy"], `arn:aws:s3:::${BUCKET}`);
+      updateStatement("AllowCURPutObject", "s3:PutObject", `arn:aws:s3:::${BUCKET}/*`);
+
+      await s3.send(new PutBucketPolicyCommand({
+        Bucket: BUCKET,
+        Policy: JSON.stringify(policyObj)
+      }));
+      console.log("BUCKET_POLICY_UPDATED for account:", awsAccountId);
 
     } catch (err) {
       console.error("S3_POLICY_UPDATE_ERROR:", err.message);
