@@ -1,30 +1,26 @@
 [
   {
     "name": "cloud-penny-getClientMe",
-    "description": "Get client profile — GET /api/v1/clients/me",
+    "description": "Get client profile",
     "aws_name_override": "cloud-penny-getClientMe",
     "handler": "index.handler",
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 10,
-    "environment": {
-      "TENANTS_TABLE": "cloudpenny-tenants"
-    },
+    "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
     "routes": [
       { "method": "GET", "path": "/api/v1/clients/me" }
     ]
   },
   {
     "name": "cloud-penny-deleteAccount",
-    "description": "Update / delete client account — PUT, DELETE /api/v1/clients/me",
+    "description": "Update / delete client account",
     "aws_name_override": "cloud-penny-deleteAccount",
     "handler": "index.handler",
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 10,
-    "environment": {
-      "TENANTS_TABLE": "cloudpenny-tenants"
-    },
+    "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
     "routes": [
       { "method": "PUT",    "path": "/api/v1/clients/me" },
       { "method": "DELETE", "path": "/api/v1/clients/me" }
@@ -32,47 +28,41 @@
   },
   {
     "name": "cloud-penny-getAwsConnection",
-    "description": "Get AWS connection / external ID — GET /api/v1/clients/aws-connection",
+    "description": "Get AWS connection / external ID",
     "aws_name_override": "cloud-penny-getAwsConnection",
     "handler": "index.handler",
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 10,
-    "environment": {
-      "TENANTS_TABLE": "cloudpenny-tenants"
-    },
+    "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
     "routes": [
-      { "method": "GET", "path": "/api/v1/clients/aws-connection" }
+      { "method": "GET", "path": "/api/v1/aws-connection" }
     ]
   },
   {
     "name": "cloud-penny-saveArn",
-    "description": "Save AWS role ARN — POST /api/v1/clients/aws-connection",
+    "description": "Save AWS role ARN",
     "aws_name_override": "cloud-penny-saveArn",
     "handler": "index.handler",
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 10,
-    "environment": {
-      "TENANTS_TABLE": "cloudpenny-tenants"
-    },
+    "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
     "routes": [
-      { "method": "POST", "path": "/api/v1/clients/aws-connection" }
+      { "method": "POST", "path": "/api/v1/aws-connection" }
     ]
   },
   {
     "name": "cloud-penny-verifyArnRole",
-    "description": "Verify AWS role ARN connection — POST /api/v1/clients/verify",
+    "description": "Verify AWS role ARN connection",
     "aws_name_override": "cloud-penny-verifyArnRole",
     "handler": "index.handler",
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 10,
-    "environment": {
-      "TENANTS_TABLE": "cloudpenny-tenants"
-    },
+    "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
     "routes": [
-      { "method": "POST", "path": "/api/v1/clients/verify" }
+      { "method": "POST", "path": "/api/v1/aws-connection/verify" }
     ]
   },
   {
@@ -83,9 +73,7 @@
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 10,
-    "environment": {
-      "TENANTS_TABLE": "cloudpenny-tenants"
-    },
+    "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
     "routes": []
   }
 ]

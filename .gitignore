@@ -1,5 +1,7 @@
 # ── Terraform ──────────────────────────────────────────────
-# Local state (never commit — remote state is in S3)
+# Terraform state (never commit — remote state is in S3)
+# Backend config files (contain bucket names — keep local)
+infra/backend-*.hcl
 infra/*.tfstate
 infra/*.tfstate.backup
 
