@@ -226,6 +226,9 @@ resource "aws_apigatewayv2_route" "routes" {
   api_id    = data.aws_apigatewayv2_api.main.id
   route_key = "${each.value.method} ${each.value.path}"
 
+  authorization_type = "JWT"
+  authorizer_id      = var.api_gateway_authorizer_id
+
   # Wire route → integration for the owning function
   target = "integrations/${aws_apigatewayv2_integration.functions[each.value.function_name].id}"
 }

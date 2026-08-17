@@ -33,6 +33,12 @@ variable "api_gateway_id" {
   default     = "d9olex4f3k" # cloud-penny API (ap-southeast-1)
 }
 
+variable "api_gateway_authorizer_id" {
+  description = "ID of the existing JWT authorizer attached to the API Gateway."
+  type        = string
+  default     = "p9tfgo" # Existing Cognito JWT authorizer
+}
+
 variable "lambda_role_name" {
   description = "Name of the existing IAM execution role shared by all Lambda functions."
   type        = string
