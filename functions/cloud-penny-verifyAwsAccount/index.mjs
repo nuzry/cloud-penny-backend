@@ -47,7 +47,7 @@ export const handler = async (event) => {
     if (BUCKET) {
       const listRes = await s3.send(new ListObjectsV2Command({
         Bucket: BUCKET,
-        Prefix: `${tenantId}/`,
+        Prefix: `${awsAccountId}/CloudPenny-${tenantId}/`,
         MaxKeys: 1
       }));
       filesReceived = listRes.KeyCount > 0;
