@@ -120,7 +120,7 @@ export const handler = async (event) => {
             Database: database
           },
           ResultConfiguration: {
-            OutputLocation: `s3://cloud-penny-athena-results-${env}/`
+            OutputLocation: `s3://cloud-penny-athena-results-${env}/${tenantId}/`
           }
         }));
 
