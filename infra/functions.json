@@ -96,5 +96,19 @@
     "timeout": 30,
     "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
     "routes": []
+  },
+  {
+    "name": "cloud-penny-saveSnapshot",
+    "description": "Triggered by EventBridge on Athena success to save results to DynamoDB",
+    "aws_name_override": "cloud-penny-saveSnapshot",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 256,
+    "timeout": 30,
+    "environment": { 
+      "SNAPSHOTS_TABLE": "cloudpenny-snapshots-dev",
+      "ATHENA_RESULTS_BUCKET": "cloudpenny-athena-results-dev" 
+    },
+    "routes": []
   }
 ]

@@ -332,3 +332,175 @@ resource "aws_iam_role_policy" "lambda_sqs_access" {
   })
 }
 
+
+# ═══════════════════════════════════════════════════════════
+# ATHENA RESULTS BUCKET
+# ═══════════════════════════════════════════════════════════
+resource "aws_s3_bucket" "athena_results" {
+  bucket = "${var.project_name}-athena-results-${var.environment}"
+}
+resource "aws_s3_bucket_lifecycle_configuration" "athena_results_cleanup" {
+  bucket = aws_s3_bucket.athena_results.id
+  rule {
+    id     = "expire-old-results"
+    status = "Enabled"
+    expiration {
+      days = 7
+    }
+  }
+}
+
+# ═══════════════════════════════════════════════════════════
+# GLUE DATABASE & CRAWLER FOR CUR
+# ═══════════════════════════════════════════════════════════
+resource "aws_glue_catalog_database" "cur_db" {
+  name = "cloudpenny_curs_${var.environment}"
+}
+
+# IAM Role for Glue Crawler
+resource "aws_iam_role" "glue_crawler_role" {
+  name = "${var.project_name}-glue-crawler-${var.environment}"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "glue.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "glue_service_role" {
+  role       = aws_iam_role.glue_crawler_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+}
+
+resource "aws_iam_role_policy" "glue_s3_access" {
+  name = "${var.project_name}-glue-s3-access-${var.environment}"
+  role = aws_iam_role.glue_crawler_role.name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject"]
+        Resource = ["${aws_s3_bucket.central_curs.arn}/*"]
+      }
+    ]
+  })
+}
+
+resource "aws_glue_crawler" "cur_crawler" {
+  database_name = aws_glue_catalog_database.cur_db.name
+  name          = "cloudpenny-cur-crawler-${var.environment}"
+  role          = aws_iam_role.glue_crawler_role.arn
+  
+  s3_target {
+    path = "s3://${aws_s3_bucket.central_curs.bucket}"
+  }
+  
+  configuration = jsonencode({
+    Version = 1.0
+    Grouping = {
+      TableGroupingPolicy = "CombineCompatibleSchemas"
+    }
+    CrawlerOutput = {
+      Partitions = { AddOrUpdateBehavior = "InheritFromTable" }
+    }
+  })
+}
+
+# ═══════════════════════════════════════════════════════════
+# DYNAMODB TABLE - SNAPSHOTS
+# ═══════════════════════════════════════════════════════════
+resource "aws_dynamodb_table" "snapshots" {
+  name           = "cloudpenny-snapshots-${var.environment}"
+  billing_mode   = "PAY_PER_REQUEST"
+  hash_key       = "tenantId"
+  range_key      = "snapshotId"
+
+  attribute {
+    name = "tenantId"
+    type = "S"
+  }
+  attribute {
+    name = "snapshotId"
+    type = "S"
+  }
+}
+
+# ═══════════════════════════════════════════════════════════
+# EVENTBRIDGE RULE (Athena -> Lambda)
+# ═══════════════════════════════════════════════════════════
+resource "aws_cloudwatch_event_rule" "athena_success" {
+  name        = "cloudpenny-athena-success-${var.environment}"
+  description = "Trigger saveSnapshot Lambda on Athena Query SUCCEEDED"
+  
+  event_pattern = jsonencode({
+    source = ["aws.athena"]
+    "detail-type" = ["Athena Query State Change"]
+    detail = {
+      currentState = ["SUCCEEDED"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "trigger_lambda" {
+  rule      = aws_cloudwatch_event_rule.athena_success.name
+  target_id = "TriggerSaveSnapshotLambda"
+  arn       = aws_lambda_function.functions["cloud-penny-saveSnapshot"].arn
+}
+
+resource "aws_lambda_permission" "allow_eventbridge" {
+  statement_id  = "AllowExecutionFromEventBridge"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.functions["cloud-penny-saveSnapshot"].function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.athena_success.arn
+}
+
+# ═══════════════════════════════════════════════════════════
+# ADDITIONAL IAM PERMISSIONS FOR LAMBDAS
+# ═══════════════════════════════════════════════════════════
+resource "aws_iam_role_policy" "lambda_athena_dynamo" {
+  name = "${var.project_name}-lambda-athena-dynamo-${var.environment}"
+  role = data.aws_iam_role.lambda_role.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults",
+          "glue:GetTable",
+          "glue:GetDatabase"
+        ]
+        Resource = ["*"]
+      },
+      {
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject", "s3:ListBucket", "s3:GetBucketLocation"]
+        Resource = [
+          aws_s3_bucket.central_curs.arn,
+          "${aws_s3_bucket.central_curs.arn}/*",
+          aws_s3_bucket.athena_results.arn,
+          "${aws_s3_bucket.athena_results.arn}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:GetItem",
+          "dynamodb:Query"
+        ]
+        Resource = [aws_dynamodb_table.snapshots.arn]
+      }
+    ]
+  })
+}
+

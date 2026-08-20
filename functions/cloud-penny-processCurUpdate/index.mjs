@@ -1,5 +1,8 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { AthenaClient, StartQueryExecutionCommand } from "@aws-sdk/client-athena";
+
+const athena = new AthenaClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" }));
 const TABLE = process.env.TENANTS_TABLE ?? "cloudpenny-tenants";
@@ -87,10 +90,41 @@ export const handler = async (event) => {
         console.log(`[QUOTA ALLOWED] Tenant ${tenantId} (${awsAccountId}) using refresh ${used}/${quota} for ${today}. Ready to parse file: ${objectKey}`);
         
         // =========================================================
-        // DOWNSTREAM PROCESSING GOES HERE
-        // E.g., trigger an Athena query, or kick off a Step Function
-        // to parse the Parquet file and check for cost anomalies.
+        // START ATHENA QUERY
         // =========================================================
+        const env = process.env.ENVIRONMENT || "dev";
+        const database = `cloudpenny_curs_${env}`;
+        // The table name is usually the bucket name or folder name determined by the Crawler.
+        const tableName = `cloudpenny_central_curs_${env}`; 
+        
+        // This query aggregates the raw parquet rows into daily service costs.
+        // It injects the tenantId as a custom tag so we can read it later in the EventBridge Lambda!
+        // We use --tenantId=${tenantId} as a SQL comment so it's passed through Athena's execution context.
+        const queryString = `
+          --tenantId=${tenantId}
+          --awsAccountId=${awsAccountId}
+          SELECT 
+            line_item_product_code as service,
+            DATE(line_item_usage_start_date) as usage_date,
+            SUM(line_item_unblended_cost) as total_cost
+          FROM "${database}"."${tableName}"
+          WHERE "$path" LIKE '%/${awsAccountId}/%'
+          GROUP BY 1, 2
+        `;
+
+        console.log(`Starting Athena query for tenant ${tenantId}...`);
+        
+        const startQueryRes = await athena.send(new StartQueryExecutionCommand({
+          QueryString: queryString,
+          QueryExecutionContext: {
+            Database: database
+          },
+          ResultConfiguration: {
+            OutputLocation: `s3://cloud-penny-athena-results-${env}/`
+          }
+        }));
+
+        console.log(`Athena Query Execution ID: ${startQueryRes.QueryExecutionId}`);
 
       }
     } catch (err) {
