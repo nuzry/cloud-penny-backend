@@ -1,7 +1,6 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
 import { S3Client, CopyObjectCommand } from "@aws-sdk/client-s3";
-import jwt from "jsonwebtoken";
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
@@ -10,15 +9,17 @@ const SOURCE_BUCKET = process.env.CENTRAL_CUR_BUCKET || "cloudpenny-central-curs
 // We hardcode the template file path we know exists
 const SOURCE_KEY = "344167512252/CloudPenny-096af58c-MSXUVMQJ/data/BILLING_PERIOD=2026-08/CloudPenny-096af58c-MSXUVMQJ-00001.snappy.parquet";
 
+const extractTenantId = (event) =>
+  event?.requestContext?.authorizer?.jwt?.claims?.sub ??
+  event?.requestContext?.authorizer?.claims?.sub ??
+  null;
+
 export const handler = async (event) => {
   try {
-    const authHeader = event.headers.Authorization || event.headers.authorization;
-    if (!authHeader) {
+    const tenantId = extractTenantId(event);
+    if (!tenantId) {
       return { statusCode: 401, body: JSON.stringify({ message: "Unauthorized" }) };
     }
-    const token = authHeader.split(" ")[1];
-    const decoded = jwt.decode(token);
-    const tenantId = decoded["custom:tenant_id"];
 
     // Fetch the client's awsAccountId
     const getRes = await dynamo.send(new GetCommand({
@@ -37,7 +38,8 @@ export const handler = async (event) => {
 
     // To ensure a unique file drop that triggers SQS, we generate a random suffix
     const randomId = Math.random().toString(36).substring(2, 8);
-    const destinationKey = `${awsAccountId}/CloudPenny-Sample/data/BILLING_PERIOD=2026-08/sample-${randomId}.parquet`;
+    // MUST drop into the exact same folder the Glue crawler mapped to for this partition
+    const destinationKey = `${awsAccountId}/CloudPenny-096af58c-MSXUVMQJ/data/BILLING_PERIOD=2026-08/sample-${randomId}.parquet`;
 
     console.log(`Copying template from ${SOURCE_KEY} to ${destinationKey}`);
 
