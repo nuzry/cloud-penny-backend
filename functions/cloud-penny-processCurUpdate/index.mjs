@@ -95,7 +95,7 @@ export const handler = async (event) => {
         const env = process.env.ENVIRONMENT || "dev";
         const database = `cloudpenny_curs_${env}`;
         // The table name is usually the bucket name or folder name determined by the Crawler.
-        const tableName = `cloudpenny_central_curs_${env}`; 
+        const tableName = `data`; 
         
         // This query aggregates the raw parquet rows into daily service costs.
         // It injects the tenantId as a custom tag so we can read it later in the EventBridge Lambda!
