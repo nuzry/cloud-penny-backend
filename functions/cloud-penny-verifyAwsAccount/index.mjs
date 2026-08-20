@@ -45,9 +45,10 @@ export const handler = async (event) => {
   let filesReceived = false;
   try {
     if (BUCKET) {
+      const shortId = tenantId.substring(0, 8);
       const listRes = await s3.send(new ListObjectsV2Command({
         Bucket: BUCKET,
-        Prefix: `${awsAccountId}/CloudPenny-${tenantId}/`,
+        Prefix: `${awsAccountId}/CloudPenny-${shortId}-`,
         MaxKeys: 1
       }));
       filesReceived = listRes.KeyCount > 0;
