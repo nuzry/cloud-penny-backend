@@ -1,5 +1,5 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { S3Client, ListObjectsV2Command } from "@aws-sdk/client-s3";
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" }));
@@ -59,8 +59,20 @@ export const handler = async (event) => {
   }
 
   if (filesReceived) {
-    // In a real scenario, you might update DynamoDB here to set connectionStatus = VERIFIED
-    // Or you let your data pipeline lambda do that when it processes the first file.
+    try {
+      await dynamo.send(new UpdateCommand({
+        TableName: TABLE,
+        Key: { tenantId },
+        UpdateExpression: "SET connectionStatus = :status, lastVerifiedAt = :now",
+        ExpressionAttributeValues: {
+          ":status": "VERIFIED",
+          ":now": new Date().toISOString()
+        }
+      }));
+    } catch (err) {
+      console.error("DYNAMO_UPDATE_ERROR", err);
+    }
+
     return response(200, {
       success: true,
       data: { connectionStatus: "VERIFIED" }
