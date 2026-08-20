@@ -1,7 +1,7 @@
 // lambdas/deleteAccount/index.js
 import { CognitoIdentityProviderClient, AdminDeleteUserCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, DeleteCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, DeleteCommand, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { S3Client, GetBucketPolicyCommand, PutBucketPolicyCommand } from "@aws-sdk/client-s3";
 
 const s3 = new S3Client({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
@@ -51,6 +51,48 @@ export const handler = async (event) => {
 
   console.log("TENANT_ID:", tenantId, "USERNAME:", username);
 
+  const method = event.requestContext?.http?.method || event.httpMethod;
+
+  if (method === "PUT") {
+    // -------------------------------------------------------------
+    // PUT: UPDATE CLIENT SETTINGS
+    // -------------------------------------------------------------
+    try {
+      const body = JSON.parse(event.body || "{}");
+      
+      const updateExpressions = [];
+      const expressionAttributeValues = {};
+      const expressionAttributeNames = {};
+      
+      // Update Daily Refresh Quota
+      if (body.dailyRefreshQuota !== undefined) {
+        updateExpressions.push("#quota = :quota");
+        expressionAttributeNames["#quota"] = "dailyRefreshQuota";
+        expressionAttributeValues[":quota"] = Number(body.dailyRefreshQuota);
+      }
+
+      if (updateExpressions.length === 0) {
+        return response(400, { success: false, error: "No valid fields provided for update" });
+      }
+
+      await dynamo.send(new UpdateCommand({
+        TableName: TABLE,
+        Key: { tenantId },
+        UpdateExpression: "SET " + updateExpressions.join(", "),
+        ExpressionAttributeNames: expressionAttributeNames,
+        ExpressionAttributeValues: expressionAttributeValues
+      }));
+
+      return response(200, { success: true, message: "Settings updated successfully" });
+    } catch (err) {
+      console.error("DYNAMODB_UPDATE_ERROR:", err);
+      return response(500, { success: false, error: "Failed to update settings" });
+    }
+  }
+
+  // -------------------------------------------------------------
+  // DELETE: REMOVE CLIENT ACCOUNT
+  // -------------------------------------------------------------
   // Step 0 - Fetch the user's AWS Account ID to clean up S3 Bucket Policy
   let awsAccountId = null;
   try {

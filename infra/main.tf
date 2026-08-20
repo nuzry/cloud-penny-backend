@@ -249,3 +249,86 @@ resource "aws_lambda_permission" "api_gateway" {
   # Restrict to this specific API, all stages, all routes
   source_arn = "${data.aws_apigatewayv2_api.main.execution_arn}/*/*"
 }
+
+
+# ═══════════════════════════════════════════════════════════
+# SQS QUEUE for CUR Updates
+# ═══════════════════════════════════════════════════════════
+
+resource "aws_sqs_queue" "cur_updates" {
+  name = "cloudpenny-cur-updates-${var.environment}"
+  # Optional: Configure visibility timeout, typically 6x Lambda timeout
+  visibility_timeout_seconds = 180
+}
+
+# Allow S3 to send messages to the SQS queue
+resource "aws_sqs_queue_policy" "cur_updates_policy" {
+  queue_url = aws_sqs_queue.cur_updates.id
+  policy    = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = { Service = "s3.amazonaws.com" }
+        Action   = "sqs:SendMessage"
+        Resource = aws_sqs_queue.cur_updates.arn
+        Condition = {
+          ArnLike = {
+            "aws:SourceArn" = aws_s3_bucket.central_curs.arn
+          }
+        }
+      }
+    ]
+  })
+}
+
+# ═══════════════════════════════════════════════════════════
+# S3 EVENT NOTIFICATIONS
+# ═══════════════════════════════════════════════════════════
+
+resource "aws_s3_bucket_notification" "bucket_notification" {
+  bucket = aws_s3_bucket.central_curs.id
+
+  queue {
+    queue_arn     = aws_sqs_queue.cur_updates.arn
+    events        = ["s3:ObjectCreated:*"]
+  }
+  
+  depends_on = [aws_sqs_queue_policy.cur_updates_policy]
+}
+
+# ═══════════════════════════════════════════════════════════
+# LAMBDA EVENT SOURCE MAPPING (SQS -> Lambda)
+# ═══════════════════════════════════════════════════════════
+
+resource "aws_lambda_event_source_mapping" "sqs_trigger" {
+  # We look up the specific lambda we just created
+  event_source_arn = aws_sqs_queue.cur_updates.arn
+  function_name    = aws_lambda_function.functions["cloud-penny-processCurUpdate"].arn
+  batch_size       = 10
+}
+
+# ═══════════════════════════════════════════════════════════
+# IAM PERMISSIONS FOR LAMBDA TO READ FROM SQS
+# ═══════════════════════════════════════════════════════════
+
+resource "aws_iam_role_policy" "lambda_sqs_access" {
+  name = "${var.project_name}-lambda-sqs-access-${var.environment}"
+  role = data.aws_iam_role.lambda_role.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = aws_sqs_queue.cur_updates.arn
+      }
+    ]
+  })
+}
+

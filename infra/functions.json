@@ -85,5 +85,16 @@
     "timeout": 10,
     "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
     "routes": []
+  },
+  {
+    "name": "cloud-penny-processCurUpdate",
+    "description": "SQS Worker to process CUR updates from S3 events and enforce quota",
+    "aws_name_override": "cloud-penny-processCurUpdate",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 128,
+    "timeout": 30,
+    "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
+    "routes": []
   }
 ]

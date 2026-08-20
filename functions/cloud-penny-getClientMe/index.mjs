@@ -36,6 +36,7 @@ const sanitiseTenant = (item) => {
   if (item.roleArn)           data.roleArn            = item.roleArn;
   if (item.lastVerifiedAt)    data.lastVerifiedAt     = item.lastVerifiedAt;
   if (item.lastFailureReason) data.lastFailureReason  = item.lastFailureReason;
+  if (item.dailyRefreshQuota !== undefined) data.dailyRefreshQuota = item.dailyRefreshQuota;
 
   return data;
 };
