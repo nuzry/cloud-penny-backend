@@ -112,6 +112,22 @@
     "routes": []
   },
   {
+    "name": "cloud-penny-getDashboardData",
+    "description": "Get dashboard metrics",
+    "aws_name_override": "cloud-penny-getDashboardData",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 128,
+    "timeout": 30,
+    "environment": { 
+      "TENANTS_TABLE": "cloudpenny-tenants",
+      "SNAPSHOTS_TABLE": "cloudpenny-snapshots-dev"
+    },
+    "routes": [
+      { "method": "GET", "path": "/api/v1/dashboard" }
+    ]
+  },
+  {
     "name": "cloud-penny-triggerSampleCur",
     "description": "Dev endpoint to inject sample CUR and trigger orchestration",
     "aws_name_override": "cloud-penny-triggerSampleCur",
