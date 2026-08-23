@@ -126,21 +126,5 @@
     "routes": [
       { "method": "GET", "path": "/api/v1/dashboard" }
     ]
-  },
-  {
-    "name": "cloud-penny-triggerSampleCur",
-    "description": "Dev endpoint to inject sample CUR and trigger orchestration",
-    "aws_name_override": "cloud-penny-triggerSampleCur",
-    "handler": "index.handler",
-    "runtime": "nodejs20.x",
-    "memory": 128,
-    "timeout": 30,
-    "environment": { 
-      "TENANTS_TABLE": "cloudpenny-tenants",
-      "CENTRAL_CUR_BUCKET": "cloudpenny-central-curs-dev" 
-    },
-    "routes": [
-      { "method": "POST", "path": "/api/v1/dev/trigger-sample-cur" }
-    ]
   }
 ]

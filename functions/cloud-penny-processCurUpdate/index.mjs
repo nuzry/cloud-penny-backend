@@ -104,12 +104,17 @@ export const handler = async (event) => {
           --tenantId=${tenantId}
           --awsAccountId=${awsAccountId}
           SELECT 
-            line_item_product_code as service,
+            COALESCE(line_item_product_code, 'Unknown') as service,
+            COALESCE(line_item_operation, 'Unknown') as operation,
+            COALESCE(product_region_code, '') as region,
+            COALESCE(line_item_line_item_type, 'Usage') as line_item_type,
             DATE(line_item_usage_start_date) as usage_date,
-            SUM(line_item_unblended_cost) as total_cost
+            SUM(TRY_CAST(line_item_usage_amount AS DOUBLE)) as usage_amount,
+            SUM(TRY_CAST(line_item_unblended_cost AS DOUBLE)) as total_cost
           FROM "${database}"."${tableName}"
           WHERE "$path" LIKE '%/${awsAccountId}/%'
-          GROUP BY 1, 2
+            AND line_item_usage_start_date IS NOT NULL
+          GROUP BY 1, 2, 3, 4, 5
         `;
 
         console.log(`Starting Athena query for tenant ${tenantId}...`);

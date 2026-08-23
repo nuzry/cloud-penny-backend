@@ -56,16 +56,21 @@ export const handler = async (event) => {
     let totalCost = 0;
     const services = {};
     const dailySpend = {};
+    const dailyData = {};
 
     let currentMonth = "";
 
     // Skip the first row (headers)
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i].Data;
-      // SELECT service, usage_date, total_cost
+      // SELECT service, operation, region, line_item_type, usage_date, usage_amount, total_cost
       const serviceName = row[0].VarCharValue || "Unknown";
-      const usageDate = row[1].VarCharValue || ""; // YYYY-MM-DD
-      const cost = parseFloat(row[2].VarCharValue || "0");
+      const operation = row[1].VarCharValue || "Unknown";
+      const region = row[2].VarCharValue || "";
+      const lineItemType = row[3].VarCharValue || "Usage";
+      const usageDate = row[4].VarCharValue || ""; // YYYY-MM-DD
+      const usageAmount = parseFloat(row[5].VarCharValue || "0");
+      const cost = parseFloat(row[6].VarCharValue || "0");
 
       if (!currentMonth && usageDate) {
         currentMonth = usageDate.substring(0, 7); // Extract YYYY-MM
@@ -75,6 +80,13 @@ export const handler = async (event) => {
       
       services[serviceName] = (services[serviceName] || 0) + cost;
       dailySpend[usageDate] = (dailySpend[usageDate] || 0) + cost;
+
+      if (!dailyData[usageDate]) {
+        dailyData[usageDate] = { totalCost: 0, services: {}, items: [] };
+      }
+      dailyData[usageDate].totalCost += cost;
+      dailyData[usageDate].services[serviceName] = (dailyData[usageDate].services[serviceName] || 0) + cost;
+      dailyData[usageDate].items.push({ service: serviceName, operation, region, lineItemType, usageAmount, cost });
     }
 
     if (!currentMonth) {
@@ -87,7 +99,7 @@ export const handler = async (event) => {
 
     console.log(`Aggregated Data for ${snapshotId}: Total Cost: $${totalCost.toFixed(2)}`);
 
-    // 4. Upsert Snapshot in DynamoDB
+    // 4. Upsert Snapshot in DynamoDB (Monthly)
     await dynamo.send(new UpdateCommand({
       TableName: SNAPSHOTS_TABLE,
       Key: { tenantId, snapshotId },
@@ -109,7 +121,33 @@ export const handler = async (event) => {
       }
     }));
 
-    console.log(`Successfully saved snapshot ${snapshotId} for tenant ${tenantId}`);
+    // 5. Upsert Daily Snapshots
+    const dailyPromises = Object.entries(dailyData).map(([date, data]) => {
+      return dynamo.send(new UpdateCommand({
+        TableName: SNAPSHOTS_TABLE,
+        Key: { tenantId, snapshotId: `DAY#${date}` },
+        UpdateExpression: `
+          SET totalCost = :tc,
+              currency = :cur,
+              services = :svc,
+              items = :items,
+              updatedAt = :ua,
+              awsAccountId = :acc
+        `,
+        ExpressionAttributeValues: {
+          ":tc": data.totalCost,
+          ":cur": "USD",
+          ":svc": data.services,
+          ":items": data.items,
+          ":ua": new Date().toISOString(),
+          ":acc": awsAccountId
+        }
+      }));
+    });
+
+    await Promise.all(dailyPromises);
+
+    console.log(`Successfully saved snapshot ${snapshotId} and ${dailyPromises.length} daily snapshots for tenant ${tenantId}`);
 
   } catch (err) {
     console.error("Failed to process Athena results and save snapshot:", err);
