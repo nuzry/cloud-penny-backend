@@ -344,6 +344,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "athena_results_cleanup" {
   rule {
     id     = "expire-old-results"
     status = "Enabled"
+    filter {}
     expiration {
       days = 7
     }
