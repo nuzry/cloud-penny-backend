@@ -126,5 +126,21 @@
     "routes": [
       { "method": "GET", "path": "/api/v1/dashboard" }
     ]
+  },
+  {
+    "name": "cloud-penny-getExportFiles",
+    "description": "List Athena CSV exports for the current tenant with pre-signed download URLs",
+    "aws_name_override": "cloud-penny-getExportFiles",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 128,
+    "timeout": 15,
+    "environment": {
+      "TENANTS_TABLE": "cloudpenny-tenants",
+      "ATHENA_RESULTS_BUCKET": "cloud-penny-athena-results-dev"
+    },
+    "routes": [
+      { "method": "GET", "path": "/api/v1/exports" }
+    ]
   }
 ]
