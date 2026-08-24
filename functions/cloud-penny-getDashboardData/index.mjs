@@ -43,13 +43,13 @@ export const handler = async (event) => {
         return {
           statusCode: 200,
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+          body: JSON.stringify({ success: true, data: {
             dailyItems: [],
             totalCost: 0,
             currency: "USD",
             updatedAt: new Date().toISOString(),
             message: "No data available for current month yet."
-          })
+          }})
         };
       }
       
@@ -69,12 +69,12 @@ export const handler = async (event) => {
       return {
         statusCode: 200,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: JSON.stringify({ success: true, data: {
           dailyItems: fallbackItems,
           totalCost: getRes.Item.totalCost || 0,
           currency: getRes.Item.currency || "USD",
           updatedAt: getRes.Item.updatedAt
-        })
+        }})
       };
     }
 
@@ -122,12 +122,12 @@ export const handler = async (event) => {
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+      body: JSON.stringify({ success: true, data: {
         dailyItems,
         totalCost,
         currency: "USD",
         updatedAt
-      })
+      }})
     };
   } catch (error) {
     console.error("Error fetching dashboard data:", error);
