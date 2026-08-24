@@ -130,10 +130,13 @@ export const handler = async (event) => {
           SET totalCost = :tc,
               currency = :cur,
               services = :svc,
-              items = :items,
+              #items = :items,
               updatedAt = :ua,
               awsAccountId = :acc
         `,
+        ExpressionAttributeNames: {
+          "#items": "items"
+        },
         ExpressionAttributeValues: {
           ":tc": data.totalCost,
           ":cur": "USD",
