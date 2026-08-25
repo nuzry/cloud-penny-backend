@@ -477,6 +477,7 @@ resource "aws_iam_role_policy" "lambda_athena_dynamo" {
           "athena:GetQueryExecution",
           "athena:GetQueryResults",
           "glue:GetTable",
+          "glue:GetTables",
           "glue:GetDatabase",
           "glue:GetPartitions"
         ]

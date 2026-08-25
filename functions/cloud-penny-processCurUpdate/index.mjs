@@ -1,8 +1,10 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AthenaClient, StartQueryExecutionCommand } from "@aws-sdk/client-athena";
+import { GlueClient, GetTablesCommand } from "@aws-sdk/client-glue";
 
 const athena = new AthenaClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
+const glue = new GlueClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" }));
 const TABLE = process.env.TENANTS_TABLE ?? "cloudpenny-tenants";
@@ -11,6 +13,7 @@ const TABLE = process.env.TENANTS_TABLE ?? "cloudpenny-tenants";
 const DEFAULT_DAILY_QUOTA = 1;
 
 export const handler = async (event) => {
+  console.log("=== processCurUpdate Lambda INVOKED ===");
   console.log("Received SQS Event:", JSON.stringify(event, null, 2));
 
   for (const record of event.Records) {
@@ -19,24 +22,30 @@ export const handler = async (event) => {
       const s3Event = JSON.parse(record.body);
       
       // Sometimes SQS receives test events from S3 (e.g. s3:TestEvent), skip them
-      if (s3Event.Event === "s3:TestEvent") continue;
+      if (s3Event.Event === "s3:TestEvent") {
+        console.log("[SKIP] s3:TestEvent received — ignoring.");
+        continue;
+      }
 
       for (const s3Record of s3Event.Records || []) {
         const objectKey = decodeURIComponent(s3Record.s3.object.key.replace(/\+/g, " "));
-        console.log(`Processing update for file: ${objectKey}`);
+        const bucketName = s3Record.s3?.bucket?.name || "unknown";
+        console.log(`[STEP 1] Processing S3 event — Bucket: ${bucketName}, Key: ${objectKey}`);
 
         // The object key format is expected to be: {awsAccountId}/...
         const parts = objectKey.split('/');
         if (parts.length < 2) {
-          console.warn(`Object key ${objectKey} doesn't match expected pattern {awsAccountId}/... Skipping.`);
+          console.warn(`[STEP 1 SKIP] Object key ${objectKey} doesn't match expected pattern {awsAccountId}/... Skipping.`);
           continue;
         }
 
         const awsAccountId = parts[0];
+        console.log(`[STEP 1 OK] Extracted AWS Account ID: ${awsAccountId}`);
 
         // 1. Lookup the tenantId in DynamoDB using the awsAccountId
         // Note: Using Scan here because there isn't a GSI on awsAccountId yet.
         // For production scale, add a Global Secondary Index (GSI) on awsAccountId and use Query.
+        console.log(`[STEP 2] Scanning DynamoDB table "${TABLE}" for awsAccountId: ${awsAccountId}`);
         const scanRes = await dynamo.send(new ScanCommand({
           TableName: TABLE,
           FilterExpression: "awsAccountId = :accId",
@@ -44,12 +53,13 @@ export const handler = async (event) => {
         }));
 
         if (!scanRes.Items || scanRes.Items.length === 0) {
-          console.warn(`No tenant found for AWS Account ID: ${awsAccountId}. Skipping.`);
+          console.warn(`[STEP 2 FAIL] No tenant found for AWS Account ID: ${awsAccountId}. Skipping.`);
           continue;
         }
 
         const tenant = scanRes.Items[0];
         const tenantId = tenant.tenantId;
+        console.log(`[STEP 2 OK] Found tenant: ${tenantId}`);
 
         // 2. Evaluate Quota
         const today = new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD (UTC)
@@ -62,8 +72,11 @@ export const handler = async (event) => {
         let used = tenant.dailyRefreshesUsed || 0;
         let lastDate = tenant.lastRefreshDate || "";
 
+        console.log(`[STEP 3] Quota check — today(UTC): ${today}, lastRefreshDate: ${lastDate}, used: ${used}, quota: ${quota}`);
+
         // Reset if it's a new day
         if (lastDate !== today) {
+          console.log(`[STEP 3] New day detected (${lastDate} → ${today}). Resetting usage counter.`);
           used = 0;
           lastDate = today;
         }
@@ -87,15 +100,38 @@ export const handler = async (event) => {
           }
         }));
 
-        console.log(`[QUOTA ALLOWED] Tenant ${tenantId} (${awsAccountId}) using refresh ${used}/${quota} for ${today}. Ready to parse file: ${objectKey}`);
+        console.log(`[QUOTA ALLOWED] Tenant ${tenantId} (${awsAccountId}) using refresh ${used}/${quota} for ${today}.`);
         
         // =========================================================
         // START ATHENA QUERY
         // =========================================================
         const env = process.env.ENVIRONMENT || "dev";
         const database = `cloudpenny_curs_${env}`;
-        // The table name is usually the bucket name or folder name determined by the Crawler.
-        const tableName = `data`; 
+        
+        console.log(`[STEP 4] Looking up Glue tables in database: ${database}`);
+        
+        let tableName = `data`; // Fallback
+        try {
+          const glueRes = await glue.send(new GetTablesCommand({ DatabaseName: database }));
+          if (glueRes.TableList) {
+            console.log(`[STEP 4] Found ${glueRes.TableList.length} Glue table(s): ${glueRes.TableList.map(t => t.Name).join(', ')}`);
+            const match = glueRes.TableList.find(t => t.StorageDescriptor?.Location?.includes(`/${awsAccountId}/`));
+            if (match) {
+              tableName = match.Name;
+              console.log(`[STEP 4 OK] Matched Glue table for account ${awsAccountId}: ${tableName}`);
+            } else {
+              console.log(`[STEP 4] No Glue table matched /${awsAccountId}/. Using fallback table: ${tableName}`);
+              // Log all table locations for debugging
+              glueRes.TableList.forEach(t => {
+                console.log(`  Table "${t.Name}" → ${t.StorageDescriptor?.Location}`);
+              });
+            }
+          }
+        } catch (e) {
+          console.warn("[STEP 4 WARN] Failed to lookup Glue tables, falling back to 'data'", e);
+        }
+        
+        const outputLocation = `s3://cloud-penny-athena-results-${env}/${tenantId}/`;
         
         // This query aggregates the raw parquet rows into daily service costs.
         // It injects the tenantId as a custom tag so we can read it later in the EventBridge Lambda!
@@ -117,7 +153,9 @@ export const handler = async (event) => {
           GROUP BY 1, 2, 3, 4, 5
         `;
 
-        console.log(`Starting Athena query for tenant ${tenantId}...`);
+        console.log(`[STEP 5] Starting Athena query for tenant ${tenantId}...`);
+        console.log(`[STEP 5] Database: ${database}, Table: ${tableName}`);
+        console.log(`[STEP 5] Output Location: ${outputLocation}`);
         
         const startQueryRes = await athena.send(new StartQueryExecutionCommand({
           QueryString: queryString,
@@ -125,15 +163,16 @@ export const handler = async (event) => {
             Database: database
           },
           ResultConfiguration: {
-            OutputLocation: `s3://cloud-penny-athena-results-${env}/${tenantId}/`
+            OutputLocation: outputLocation
           }
         }));
 
-        console.log(`Athena Query Execution ID: ${startQueryRes.QueryExecutionId}`);
+        console.log(`[STEP 5 OK] Athena Query Execution ID: ${startQueryRes.QueryExecutionId}`);
+        console.log(`=== processCurUpdate DONE for tenant ${tenantId} ===`);
 
       }
     } catch (err) {
-      console.error("Error processing SQS record:", err);
+      console.error("=== processCurUpdate FATAL ERROR ===", err);
       // Throwing the error will cause SQS to retry this specific message
       throw err;
     }
