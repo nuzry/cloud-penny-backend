@@ -32,15 +32,51 @@ export const handler = async (event) => {
         const bucketName = s3Record.s3?.bucket?.name || "unknown";
         console.log(`[STEP 1] Processing S3 event — Bucket: ${bucketName}, Key: ${objectKey}`);
 
-        // The object key format is expected to be: {awsAccountId}/...
+        // ── VALIDATE S3 KEY STRUCTURE ──────────────────────────────────
+        // Expected BCM Data Export key format:
+        //   {awsAccountId}/{ExportName}/data/BILLING_PERIOD={YYYY-MM}/{filename}.snappy.parquet
+        //
+        // We MUST skip:
+        //   - metadata/ files (manifest JSON files)
+        //   - Non-parquet files (test files, txt, csv, etc.)
+        //   - Files not under /data/ path
+        //   - Root-level objects (e.g., aws-programmatic-access-test-object)
+
+        // 1. Must be a .parquet file
+        if (!objectKey.endsWith('.parquet')) {
+          console.log(`[STEP 1 SKIP] Not a parquet file: ${objectKey}. Skipping.`);
+          continue;
+        }
+
+        // 2. Must follow the expected folder structure
         const parts = objectKey.split('/');
-        if (parts.length < 2) {
-          console.warn(`[STEP 1 SKIP] Object key ${objectKey} doesn't match expected pattern {awsAccountId}/... Skipping.`);
+        // Expected: [accountId, exportName, "data", "BILLING_PERIOD=YYYY-MM", "filename.parquet"]
+        if (parts.length < 5) {
+          console.warn(`[STEP 1 SKIP] Object key ${objectKey} doesn't match expected BCM structure {accountId}/{exportName}/data/BILLING_PERIOD=.../file.parquet. Skipping.`);
+          continue;
+        }
+
+        // 3. Must be under /data/ path (not /metadata/)
+        if (parts[2] !== 'data') {
+          console.log(`[STEP 1 SKIP] File is not under /data/ path (found: ${parts[2]}). Skipping.`);
+          continue;
+        }
+
+        // 4. Must have a valid BILLING_PERIOD partition
+        if (!parts[3].startsWith('BILLING_PERIOD=')) {
+          console.log(`[STEP 1 SKIP] Missing BILLING_PERIOD partition key in path. Skipping.`);
           continue;
         }
 
         const awsAccountId = parts[0];
-        console.log(`[STEP 1 OK] Extracted AWS Account ID: ${awsAccountId}`);
+        const exportName = parts[1];
+        const billingPeriod = parts[3].replace('BILLING_PERIOD=', '');
+        const fileName = parts[4];
+        console.log(`[STEP 1 OK] Valid BCM file detected:`);
+        console.log(`  Account ID:      ${awsAccountId}`);
+        console.log(`  Export Name:     ${exportName}`);
+        console.log(`  Billing Period:  ${billingPeriod}`);
+        console.log(`  File Name:       ${fileName}`);
 
         // 1. Lookup the tenantId in DynamoDB using the awsAccountId
         // Note: Using Scan here because there isn't a GSI on awsAccountId yet.
