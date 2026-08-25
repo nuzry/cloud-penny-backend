@@ -70,19 +70,23 @@ export const handler = async (event) => {
         <p>Best,<br/>The Cloud Penny Team</p>
       `;
 
-      await ses.send(new SendEmailCommand({
-        Source: SENDER_EMAIL,
-        Destination: {
-          ToAddresses: [recipientEmail]
-        },
-        Message: {
-          Subject: { Data: `AWS Cost Anomaly Detected - Account ${awsAccountId}` },
-          Body: {
-            Html: { Data: htmlBody }
+      try {
+        await ses.send(new SendEmailCommand({
+          Source: SENDER_EMAIL,
+          Destination: {
+            ToAddresses: [recipientEmail]
+          },
+          Message: {
+            Subject: { Data: `AWS Cost Anomaly Detected - Account ${awsAccountId}` },
+            Body: {
+              Html: { Data: htmlBody }
+            }
           }
-        }
-      }));
-      console.log("Alert email sent successfully.");
+        }));
+        console.log("Alert email sent successfully.");
+      } catch (emailErr) {
+        console.warn(`Failed to send email to ${recipientEmail}:`, emailErr.message);
+      }
 
       // Save alert to DynamoDB
       const ALERTS_TABLE = process.env.ALERTS_TABLE ?? "cloudpenny-alerts-dev";
