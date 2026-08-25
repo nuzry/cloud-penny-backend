@@ -1,0 +1,11 @@
+{
+  "name": "cloud-penny-getAlerts",
+  "version": "1.0.0",
+  "description": "Fetch anomaly alerts",
+  "main": "index.mjs",
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.500.0",
+    "@aws-sdk/lib-dynamodb": "^3.500.0"
+  }
+}

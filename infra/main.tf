@@ -1,23 +1,9 @@
-# ─────────────────────────────────────────────────────────────
-# main.tf — Core infrastructure
 #
 # Resources managed here:
 #   - CloudWatch Log Group (shared, /aws/lambda/cloud-penny)
-#   - aws_lambda_function   — one per entry in functions.json
-#   - aws_apigatewayv2_integration — one per function
-#   - aws_apigatewayv2_route       — one per route in functions.json
-#   - aws_lambda_permission        — allows API GW to invoke each function
 #
-# Data sources (existing AWS resources — NOT re-created):
-#   - aws_caller_identity   — current AWS account
-#   - aws_apigatewayv2_api  — existing cloud-penny HTTP API
-#   - aws_iam_role          — existing cloud-penny-lambda-role
-# ─────────────────────────────────────────────────────────────
 
 
-# ═══════════════════════════════════════════════════════════
-# DATA SOURCES — reference existing AWS resources
-# ═══════════════════════════════════════════════════════════
 
 data "aws_caller_identity" "current" {}
 
@@ -32,12 +18,9 @@ data "aws_iam_role" "lambda_role" {
 }
 
 
-# ═══════════════════════════════════════════════════════════
-# CLOUDWATCH — shared log group for all Lambda functions
-# ═══════════════════════════════════════════════════════════
 
 resource "aws_cloudwatch_log_group" "lambda_logs" {
-  name              = local.log_group_name   # /aws/lambda/cloud-penny
+  name              = local.log_group_name # /aws/lambda/cloud-penny
   retention_in_days = var.log_retention_days
 
   # Tags are automatically inherited from provider default_tags.
@@ -45,9 +28,7 @@ resource "aws_cloudwatch_log_group" "lambda_logs" {
 }
 
 
-# ═══════════════════════════════════════════════════════════
 # CENTRAL CUR S3 BUCKET
-# ═══════════════════════════════════════════════════════════
 
 resource "aws_s3_bucket" "central_curs" {
   bucket = "${var.central_curs_bucket_name}-${var.environment}"
@@ -133,14 +114,11 @@ resource "aws_iam_role_policy" "lambda_s3_access" {
 }
 
 
-# ═══════════════════════════════════════════════════════════
-# LAMBDA FUNCTIONS — one per entry in functions.json
-# ═══════════════════════════════════════════════════════════
 
 resource "aws_lambda_function" "functions" {
   for_each = local.functions_map
 
-  # ── Naming ─────────────────────────────────────────────────
+  
   # If the function already exists in AWS under a different name, set
   # aws_name_override in functions.json before running terraform import.
   function_name = (
@@ -149,31 +127,30 @@ resource "aws_lambda_function" "functions" {
     : "${var.project_name}-${each.key}-${var.environment}"
   )
 
-  # ── Code artifact ──────────────────────────────────────────
+
   # Built by:  npm run zip  (scripts/zip-functions.js)
   filename         = "${path.module}/../dist/${each.key}.zip"
   source_code_hash = filebase64sha256("${path.module}/../dist/${each.key}.zip")
 
-  # ── Runtime ────────────────────────────────────────────────
+
   role        = data.aws_iam_role.lambda_role.arn
   handler     = try(each.value.handler, "index.handler")
   runtime     = try(each.value.runtime, var.lambda_runtime)
   memory_size = try(each.value.memory, 128)
   timeout     = try(each.value.timeout, 10)
 
-  # ── Environment variables ───────────────────────────────────
   environment {
     variables = merge(
       {
-        ENVIRONMENT   = var.environment
-        PROJECT       = var.project_name
-        FUNCTION_NAME = each.key
+        ENVIRONMENT           = var.environment
+        PROJECT               = var.project_name
+        FUNCTION_NAME         = each.key
+        ANOMALY_SNS_TOPIC_ARN = aws_sns_topic.anomaly_alerts.arn
       },
       try(each.value.environment, {})
     )
   }
 
-  # ── Observability ───────────────────────────────────────────
   # Direct all logs to the shared /aws/lambda/cloud-penny log group.
   logging_config {
     log_format = "JSON"
@@ -185,22 +162,18 @@ resource "aws_lambda_function" "functions" {
     mode = "Active"
   }
 
-  description   = try(each.value.description, "")
+  description = try(each.value.description, "")
 
-  # ── Tags ────────────────────────────────────────────────────
   # provider default_tags adds project/environment/managed_by automatically.
   tags = {
-    function    = each.key
+    function = each.key
   }
 
   depends_on = [aws_cloudwatch_log_group.lambda_logs]
 }
 
 
-# ═══════════════════════════════════════════════════════════
-# API GATEWAY — Lambda proxy integrations
 # One integration per function (multiple routes can share one integration)
-# ═══════════════════════════════════════════════════════════
 
 resource "aws_apigatewayv2_integration" "functions" {
   for_each = local.functions_map
@@ -215,10 +188,7 @@ resource "aws_apigatewayv2_integration" "functions" {
 }
 
 
-# ═══════════════════════════════════════════════════════════
-# API GATEWAY — Routes
 # One route per entry in each function's "routes" array
-# ═══════════════════════════════════════════════════════════
 
 resource "aws_apigatewayv2_route" "routes" {
   for_each = local.routes_map
@@ -229,14 +199,11 @@ resource "aws_apigatewayv2_route" "routes" {
   authorization_type = "JWT"
   authorizer_id      = var.api_gateway_authorizer_id
 
-  # Wire route → integration for the owning function
+  # Wire route integration for the owning function
   target = "integrations/${aws_apigatewayv2_integration.functions[each.value.function_name].id}"
 }
 
 
-# ═══════════════════════════════════════════════════════════
-# LAMBDA PERMISSIONS — allow API Gateway to invoke each function
-# ═══════════════════════════════════════════════════════════
 
 resource "aws_lambda_permission" "api_gateway" {
   for_each = local.functions_map
@@ -251,9 +218,7 @@ resource "aws_lambda_permission" "api_gateway" {
 }
 
 
-# ═══════════════════════════════════════════════════════════
 # SQS QUEUE for CUR Updates
-# ═══════════════════════════════════════════════════════════
 
 resource "aws_sqs_queue" "cur_updates" {
   name = "cloudpenny-cur-updates-${var.environment}"
@@ -264,14 +229,14 @@ resource "aws_sqs_queue" "cur_updates" {
 # Allow S3 to send messages to the SQS queue
 resource "aws_sqs_queue_policy" "cur_updates_policy" {
   queue_url = aws_sqs_queue.cur_updates.id
-  policy    = jsonencode({
+  policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
+        Effect    = "Allow"
         Principal = { Service = "s3.amazonaws.com" }
-        Action   = "sqs:SendMessage"
-        Resource = aws_sqs_queue.cur_updates.arn
+        Action    = "sqs:SendMessage"
+        Resource  = aws_sqs_queue.cur_updates.arn
         Condition = {
           ArnLike = {
             "aws:SourceArn" = aws_s3_bucket.central_curs.arn
@@ -282,24 +247,20 @@ resource "aws_sqs_queue_policy" "cur_updates_policy" {
   })
 }
 
-# ═══════════════════════════════════════════════════════════
 # S3 EVENT NOTIFICATIONS
-# ═══════════════════════════════════════════════════════════
 
 resource "aws_s3_bucket_notification" "bucket_notification" {
   bucket = aws_s3_bucket.central_curs.id
 
   queue {
-    queue_arn     = aws_sqs_queue.cur_updates.arn
-    events        = ["s3:ObjectCreated:*"]
+    queue_arn = aws_sqs_queue.cur_updates.arn
+    events    = ["s3:ObjectCreated:*"]
   }
-  
+
   depends_on = [aws_sqs_queue_policy.cur_updates_policy]
 }
 
-# ═══════════════════════════════════════════════════════════
 # LAMBDA EVENT SOURCE MAPPING (SQS -> Lambda)
-# ═══════════════════════════════════════════════════════════
 
 resource "aws_lambda_event_source_mapping" "sqs_trigger" {
   # We look up the specific lambda we just created
@@ -308,9 +269,7 @@ resource "aws_lambda_event_source_mapping" "sqs_trigger" {
   batch_size       = 10
 }
 
-# ═══════════════════════════════════════════════════════════
 # IAM PERMISSIONS FOR LAMBDA TO READ FROM SQS
-# ═══════════════════════════════════════════════════════════
 
 resource "aws_iam_role_policy" "lambda_sqs_access" {
   name = "${var.project_name}-lambda-sqs-access-${var.environment}"
@@ -333,9 +292,7 @@ resource "aws_iam_role_policy" "lambda_sqs_access" {
 }
 
 
-# ═══════════════════════════════════════════════════════════
 # ATHENA RESULTS BUCKET
-# ═══════════════════════════════════════════════════════════
 resource "aws_s3_bucket" "athena_results" {
   bucket = "${var.project_name}-athena-results-${var.environment}"
 }
@@ -351,9 +308,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "athena_results_cleanup" {
   }
 }
 
-# ═══════════════════════════════════════════════════════════
 # GLUE DATABASE & CRAWLER FOR CUR
-# ═══════════════════════════════════════════════════════════
 resource "aws_glue_catalog_database" "cur_db" {
   name = "cloudpenny_curs_${var.environment}"
 }
@@ -364,8 +319,8 @@ resource "aws_iam_role" "glue_crawler_role" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
       Principal = { Service = "glue.amazonaws.com" }
     }]
   })
@@ -383,8 +338,8 @@ resource "aws_iam_role_policy" "glue_s3_access" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = ["s3:GetObject", "s3:PutObject"]
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject"]
         Resource = ["${aws_s3_bucket.central_curs.arn}/*"]
       }
     ]
@@ -395,11 +350,11 @@ resource "aws_glue_crawler" "cur_crawler" {
   database_name = aws_glue_catalog_database.cur_db.name
   name          = "cloudpenny-cur-crawler-${var.environment}"
   role          = aws_iam_role.glue_crawler_role.arn
-  
+
   s3_target {
     path = "s3://${aws_s3_bucket.central_curs.bucket}"
   }
-  
+
   configuration = jsonencode({
     Version = 1.0
     Grouping = {
@@ -411,14 +366,12 @@ resource "aws_glue_crawler" "cur_crawler" {
   })
 }
 
-# ═══════════════════════════════════════════════════════════
 # DYNAMODB TABLE - SNAPSHOTS
-# ═══════════════════════════════════════════════════════════
 resource "aws_dynamodb_table" "snapshots" {
-  name           = "cloudpenny-snapshots-${var.environment}"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "tenantId"
-  range_key      = "snapshotId"
+  name         = "cloudpenny-snapshots-${var.environment}"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "tenantId"
+  range_key    = "snapshotId"
 
   attribute {
     name = "tenantId"
@@ -430,15 +383,13 @@ resource "aws_dynamodb_table" "snapshots" {
   }
 }
 
-# ═══════════════════════════════════════════════════════════
 # EVENTBRIDGE RULE (Athena -> Lambda)
-# ═══════════════════════════════════════════════════════════
 resource "aws_cloudwatch_event_rule" "athena_success" {
   name        = "cloudpenny-athena-success-${var.environment}"
   description = "Trigger saveSnapshot Lambda on Athena Query SUCCEEDED"
-  
+
   event_pattern = jsonencode({
-    source = ["aws.athena"]
+    source        = ["aws.athena"]
     "detail-type" = ["Athena Query State Change"]
     detail = {
       currentState = ["SUCCEEDED"]
@@ -460,9 +411,7 @@ resource "aws_lambda_permission" "allow_eventbridge" {
   source_arn    = aws_cloudwatch_event_rule.athena_success.arn
 }
 
-# ═══════════════════════════════════════════════════════════
 # ADDITIONAL IAM PERMISSIONS FOR LAMBDAS
-# ═══════════════════════════════════════════════════════════
 resource "aws_iam_role_policy" "lambda_athena_dynamo" {
   name = "${var.project_name}-lambda-athena-dynamo-${var.environment}"
   role = data.aws_iam_role.lambda_role.name
@@ -502,6 +451,109 @@ resource "aws_iam_role_policy" "lambda_athena_dynamo" {
           "dynamodb:Query"
         ]
         Resource = [aws_dynamodb_table.snapshots.arn]
+      }
+    ]
+  })
+}
+
+
+
+resource "aws_sns_topic" "anomaly_alerts" {
+  name = "cloudpenny-anomaly-alerts-${var.environment}"
+}
+
+resource "aws_sns_topic_policy" "anomaly_alerts_policy" {
+  arn = aws_sns_topic.anomaly_alerts.arn
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowCostAnomalyDetection"
+        Effect = "Allow"
+        Principal = {
+          Service = "costalerts.amazonaws.com"
+        }
+        Action   = "sns:Publish"
+        Resource = aws_sns_topic.anomaly_alerts.arn
+      }
+    ]
+  })
+}
+
+resource "aws_sns_topic_subscription" "anomaly_lambda" {
+  topic_arn = aws_sns_topic.anomaly_alerts.arn
+  protocol  = "lambda"
+  endpoint  = aws_lambda_function.functions["cloud-penny-processAnomalyAlert"].arn
+}
+
+resource "aws_lambda_permission" "sns_invoke_anomaly_alert" {
+  statement_id  = "AllowExecutionFromSNS"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.functions["cloud-penny-processAnomalyAlert"].function_name
+  principal     = "sns.amazonaws.com"
+  source_arn    = aws_sns_topic.anomaly_alerts.arn
+}
+
+# -----------------------------------------------------------
+# LAMBDA SES PERMISSIONS
+# -----------------------------------------------------------
+
+resource "aws_iam_role_policy" "lambda_ses_access" {
+  name = "${var.project_name}-lambda-ses-access-${var.environment}"
+  role = data.aws_iam_role.lambda_role.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ses:SendEmail",
+          "ses:SendRawEmail"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+
+
+resource "aws_dynamodb_table" "alerts" {
+  name         = "cloudpenny-alerts-${var.environment}"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "tenantId"
+  range_key    = "createdAt"
+
+  attribute {
+    name = "tenantId"
+    type = "S"
+  }
+  attribute {
+    name = "createdAt"
+    type = "S"
+  }
+}
+
+
+resource "aws_iam_role_policy" "lambda_alerts_dynamo" {
+  name = "cloud-penny-lambda-alerts-dynamo-${var.environment}"
+  role = data.aws_iam_role.lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:Scan",
+          "dynamodb:Query",
+          "dynamodb:UpdateItem"
+        ]
+        Effect   = "Allow"
+        Resource = aws_dynamodb_table.alerts.arn
       }
     ]
   })

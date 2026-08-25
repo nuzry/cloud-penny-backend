@@ -142,5 +142,35 @@
     "routes": [
       { "method": "GET", "path": "/api/v1/exports" }
     ]
+  },
+  {
+    "name": "cloud-penny-processAnomalyAlert",
+    "description": "Triggered by SNS from AWS Cost Anomaly Detection to alert users",
+    "aws_name_override": "cloud-penny-processAnomalyAlert",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 128,
+    "timeout": 15,
+    "environment": {
+      "TENANTS_TABLE": "cloudpenny-tenants",
+      "ALERTS_TABLE": "cloudpenny-alerts-dev",
+      "SENDER_EMAIL": "thenuzry@gmail.com"
+    },
+    "routes": []
+  },
+  {
+    "name": "cloud-penny-getAlerts",
+    "description": "Fetch anomaly alerts for the tenant",
+    "aws_name_override": "cloud-penny-getAlerts",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 128,
+    "timeout": 15,
+    "environment": {
+      "ALERTS_TABLE": "cloudpenny-alerts-dev"
+    },
+    "routes": [
+      { "method": "GET", "path": "/api/v1/alerts" }
+    ]
   }
 ]

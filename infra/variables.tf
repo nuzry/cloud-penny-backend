@@ -1,6 +1,4 @@
-# ─────────────────────────────────────────────────────────────
 # Input Variables
-# ─────────────────────────────────────────────────────────────
 
 variable "aws_region" {
   description = "AWS region where all resources are deployed"
@@ -25,7 +23,6 @@ variable "project_name" {
   default     = "cloud-penny"
 }
 
-# ── Existing Resources ────────────────────────────────────────
 
 variable "api_gateway_id" {
   description = "ID of the existing HTTP API Gateway that routes will be attached to."
@@ -45,7 +42,6 @@ variable "lambda_role_name" {
   default     = "cloud-penny-lambda-role"
 }
 
-# ── Observability ─────────────────────────────────────────────
 
 variable "log_retention_days" {
   description = "Number of days to retain Lambda logs in the shared CloudWatch log group."

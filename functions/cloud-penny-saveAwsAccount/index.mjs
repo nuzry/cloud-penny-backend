@@ -143,7 +143,8 @@ export const handler = async (event) => {
     `&param_S3Prefix=${awsAccountId}` +
     `&param_CentralBucketName=${BUCKET}` +
     `&param_CentralBucketRegion=${process.env.AWS_REGION ?? "ap-southeast-1"}` +
-    `&param_ExportName=${exportName}`;
+    `&param_ExportName=${exportName}` +
+    `&param_AnomalySnsTopicArn=${process.env.ANOMALY_SNS_TOPIC_ARN ?? ""}`;
 
   return response(200, {
     success: true,

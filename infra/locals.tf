@@ -1,9 +1,6 @@
-# ─────────────────────────────────────────────────────────────
-# Locals — derived values computed from functions.json
-# ─────────────────────────────────────────────────────────────
 
 locals {
-  # ── Parse functions.json ───────────────────────────────────
+  # â”€â”€ Parse functions.json â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   # Each entry drives one Lambda function + zero or more API Gateway routes.
   functions_raw = jsondecode(file("${path.module}/functions.json"))
 
@@ -12,7 +9,7 @@ locals {
     for fn in local.functions_raw : fn.name => fn
   }
 
-  # ── Flatten routes from all functions ──────────────────────
+  # â”€â”€ Flatten routes from all functions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   # Produces a flat list with enough context to create routes + integrations.
   all_routes = flatten([
     for fn in local.functions_raw : [
@@ -33,6 +30,6 @@ locals {
   # Map form for for_each
   routes_map = { for r in local.all_routes : r.key => r }
 
-  # ── CloudWatch log group name ──────────────────────────────
+  # â”€â”€ CloudWatch log group name â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   log_group_name = "/aws/lambda/${var.project_name}"
 }
