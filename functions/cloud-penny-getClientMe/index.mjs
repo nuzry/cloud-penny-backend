@@ -32,6 +32,7 @@ const sanitiseTenant = (item) => {
     updatedAt:        item.updatedAt
   };
 
+  if (item.awsAccountId)      data.awsAccountId      = item.awsAccountId;
   if (item.externalId)        data.externalId        = item.externalId;
   if (item.roleArn)           data.roleArn            = item.roleArn;
   if (item.lastVerifiedAt)    data.lastVerifiedAt     = item.lastVerifiedAt;
