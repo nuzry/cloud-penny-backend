@@ -141,7 +141,6 @@ export const handler = async (event) => {
     `?templateURL=${templateURL}` +
     `&stackName=CloudPenny-Export-${shortId}` +
     `&param_TenantId=${tenantId}` +
-    `&param_S3Prefix=${tenantId}` +
     `&param_CentralBucketName=${BUCKET}` +
     `&param_CentralBucketRegion=${process.env.AWS_REGION ?? "ap-southeast-1"}` +
     `&param_ExportName=${exportName}` +
