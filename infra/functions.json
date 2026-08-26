@@ -107,7 +107,8 @@
     "timeout": 30,
     "environment": { 
       "SNAPSHOTS_TABLE": "cloudpenny-snapshots-dev",
-      "ATHENA_RESULTS_BUCKET": "cloud-penny-athena-results-dev" 
+      "ATHENA_RESULTS_BUCKET": "cloud-penny-athena-results-dev",
+      "SNAPSHOTS_DATA_BUCKET": "cloudpenny-snapshot-data-dev"
     },
     "routes": []
   },

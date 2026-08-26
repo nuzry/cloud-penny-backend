@@ -308,6 +308,22 @@ resource "aws_s3_bucket_lifecycle_configuration" "athena_results_cleanup" {
   }
 }
 
+# SNAPSHOTS DATA BUCKET
+resource "aws_s3_bucket" "snapshot_data" {
+  bucket = "cloudpenny-snapshot-data-${var.environment}"
+}
+resource "aws_s3_bucket_lifecycle_configuration" "snapshot_data_cleanup" {
+  bucket = aws_s3_bucket.snapshot_data.id
+  rule {
+    id     = "expire-old-items"
+    status = "Enabled"
+    filter {}
+    expiration {
+      days = 30
+    }
+  }
+}
+
 # GLUE DATABASE & CRAWLER FOR CUR
 resource "aws_glue_catalog_database" "cur_db" {
   name = "cloudpenny_curs_${var.environment}"
@@ -439,7 +455,9 @@ resource "aws_iam_role_policy" "lambda_athena_dynamo" {
           aws_s3_bucket.central_curs.arn,
           "${aws_s3_bucket.central_curs.arn}/*",
           aws_s3_bucket.athena_results.arn,
-          "${aws_s3_bucket.athena_results.arn}/*"
+          "${aws_s3_bucket.athena_results.arn}/*",
+          aws_s3_bucket.snapshot_data.arn,
+          "${aws_s3_bucket.snapshot_data.arn}/*"
         ]
       },
       {

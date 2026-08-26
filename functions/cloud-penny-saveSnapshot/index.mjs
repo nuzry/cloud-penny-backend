@@ -1,11 +1,14 @@
 import { AthenaClient, GetQueryExecutionCommand, GetQueryResultsCommand } from "@aws-sdk/client-athena";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const athena = new AthenaClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" }));
+const s3 = new S3Client({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
 
 const SNAPSHOTS_TABLE = process.env.SNAPSHOTS_TABLE ?? "cloudpenny-snapshots-dev";
+const SNAPSHOTS_DATA_BUCKET = process.env.SNAPSHOTS_DATA_BUCKET;
 
 export const handler = async (event) => {
   console.log("=== saveSnapshot Lambda INVOKED ===");
@@ -192,23 +195,25 @@ export const handler = async (event) => {
     const dailyPromises = Object.entries(dailyData).map(async ([date, data]) => {
       const dailySnapshotId = `DAY#${date}`;
       
-      // Check if items array is too large for DynamoDB (400KB limit)
-      // If so, truncate items but keep the services summary
-      let itemsToStore = data.items;
-      const estimatedSize = JSON.stringify(itemsToStore).length;
+      // Save items to S3
+      const s3Key = `${tenantId}/${dailySnapshotId}.json`;
+      let itemsUrl = null;
       
-      if (estimatedSize > 350000) { // ~350KB threshold to leave room for other attributes
-        console.warn(`[STEP 6 WARN] Daily snapshot ${dailySnapshotId} items too large (${estimatedSize} bytes). Truncating items to fit DynamoDB 400KB limit.`);
-        // Keep only the first N items that fit
-        let truncatedItems = [];
-        let currentSize = 0;
-        for (const item of itemsToStore) {
-          const itemSize = JSON.stringify(item).length;
-          if (currentSize + itemSize > 300000) break;
-          truncatedItems.push(item);
-          currentSize += itemSize;
+      if (SNAPSHOTS_DATA_BUCKET) {
+        try {
+          await s3.send(new PutObjectCommand({
+            Bucket: SNAPSHOTS_DATA_BUCKET,
+            Key: s3Key,
+            Body: JSON.stringify(data.items),
+            ContentType: "application/json"
+          }));
+          itemsUrl = `s3://${SNAPSHOTS_DATA_BUCKET}/${s3Key}`;
+        } catch (s3Err) {
+          console.error(`[STEP 6 FAIL] Failed to write items to S3 for ${dailySnapshotId}:`, s3Err);
+          // We will still write to DynamoDB, but itemsUrl will be null
         }
-        itemsToStore = truncatedItems;
+      } else {
+        console.warn(`[STEP 6 WARN] SNAPSHOTS_DATA_BUCKET not configured. Items will not be saved for ${dailySnapshotId}.`);
       }
 
       try {
@@ -219,18 +224,15 @@ export const handler = async (event) => {
             SET totalCost = :tc,
                 currency = :cur,
                 services = :svc,
-                #items = :items,
+                itemsUrl = :itemsUrl,
                 updatedAt = :ua,
                 awsAccountId = :acc
           `,
-          ExpressionAttributeNames: {
-            "#items": "items"
-          },
           ExpressionAttributeValues: {
             ":tc": data.totalCost,
             ":cur": "USD",
             ":svc": data.services,
-            ":items": itemsToStore,
+            ":itemsUrl": itemsUrl || null,
             ":ua": new Date().toISOString(),
             ":acc": awsAccountId
           }
