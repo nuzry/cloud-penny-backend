@@ -17,13 +17,19 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "OPTIONS,POST"
 };
 
+const extractTenantId = (event) =>
+  event?.requestContext?.authorizer?.jwt?.claims?.sub ??
+  event?.requestContext?.authorizer?.claims?.sub ??
+  null;
+
 export const handler = async (event) => {
-  if (event.httpMethod === "OPTIONS") {
+  const method = event.requestContext?.http?.method || event.httpMethod;
+  if (method === "OPTIONS") {
     return { statusCode: 200, headers: corsHeaders, body: "" };
   }
 
   try {
-    const tenantId = event.requestContext?.authorizer?.claims?.sub;
+    const tenantId = extractTenantId(event);
     if (!tenantId) {
       return { statusCode: 401, headers: corsHeaders, body: JSON.stringify({ error: "Unauthorized" }) };
     }
