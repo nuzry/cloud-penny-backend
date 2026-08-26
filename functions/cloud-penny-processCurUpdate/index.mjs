@@ -1,5 +1,5 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AthenaClient, StartQueryExecutionCommand } from "@aws-sdk/client-athena";
 import { GlueClient, GetTablesCommand } from "@aws-sdk/client-glue";
 
@@ -68,34 +68,35 @@ export const handler = async (event) => {
           continue;
         }
 
-        const awsAccountId = parts[0];
+        const tenantId = parts[0];
         const exportName = parts[1];
         const billingPeriod = parts[3].replace('BILLING_PERIOD=', '');
         const fileName = parts[4];
         console.log(`[STEP 1 OK] Valid BCM file detected:`);
-        console.log(`  Account ID:      ${awsAccountId}`);
+        console.log(`  Tenant ID:       ${tenantId}`);
         console.log(`  Export Name:     ${exportName}`);
         console.log(`  Billing Period:  ${billingPeriod}`);
         console.log(`  File Name:       ${fileName}`);
 
-        // 1. Lookup the tenantId in DynamoDB using the awsAccountId
-        // Note: Using Scan here because there isn't a GSI on awsAccountId yet.
-        // For production scale, add a Global Secondary Index (GSI) on awsAccountId and use Query.
-        console.log(`[STEP 2] Scanning DynamoDB table "${TABLE}" for awsAccountId: ${awsAccountId}`);
-        const scanRes = await dynamo.send(new ScanCommand({
+        // 1. Lookup the tenantId in DynamoDB using GetCommand
+        console.log(`[STEP 2] Fetching tenant from DynamoDB table "${TABLE}" for tenantId: ${tenantId}`);
+        const getRes = await dynamo.send(new GetCommand({
           TableName: TABLE,
-          FilterExpression: "awsAccountId = :accId",
-          ExpressionAttributeValues: { ":accId": awsAccountId }
+          Key: { tenantId }
         }));
 
-        if (!scanRes.Items || scanRes.Items.length === 0) {
-          console.warn(`[STEP 2 FAIL] No tenant found for AWS Account ID: ${awsAccountId}. Skipping.`);
+        if (!getRes.Item) {
+          console.warn(`[STEP 2 FAIL] No tenant found for Tenant ID: ${tenantId}. Skipping.`);
           continue;
         }
 
-        const tenant = scanRes.Items[0];
-        const tenantId = tenant.tenantId;
-        console.log(`[STEP 2 OK] Found tenant: ${tenantId}`);
+        const tenant = getRes.Item;
+        const awsAccountId = tenant.awsAccountId;
+        if (!awsAccountId) {
+          console.warn(`[STEP 2 FAIL] Tenant ${tenantId} does not have an awsAccountId connected. Skipping.`);
+          continue;
+        }
+        console.log(`[STEP 2 OK] Found tenant: ${tenantId}, AWS Account ID: ${awsAccountId}`);
 
         // 2. Evaluate Quota
         const today = new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD (UTC)
@@ -151,12 +152,12 @@ export const handler = async (event) => {
           const glueRes = await glue.send(new GetTablesCommand({ DatabaseName: database }));
           if (glueRes.TableList) {
             console.log(`[STEP 4] Found ${glueRes.TableList.length} Glue table(s): ${glueRes.TableList.map(t => t.Name).join(', ')}`);
-            const match = glueRes.TableList.find(t => t.StorageDescriptor?.Location?.includes(`/${awsAccountId}/`));
+            const match = glueRes.TableList.find(t => t.StorageDescriptor?.Location?.includes(`/${tenantId}/`));
             if (match) {
               tableName = match.Name;
-              console.log(`[STEP 4 OK] Matched Glue table for account ${awsAccountId}: ${tableName}`);
+              console.log(`[STEP 4 OK] Matched Glue table for tenant ${tenantId}: ${tableName}`);
             } else {
-              console.log(`[STEP 4] No Glue table matched /${awsAccountId}/. Using fallback table: ${tableName}`);
+              console.log(`[STEP 4] No Glue table matched /${tenantId}/. Using fallback table: ${tableName}`);
               // Log all table locations for debugging
               glueRes.TableList.forEach(t => {
                 console.log(`  Table "${t.Name}" → ${t.StorageDescriptor?.Location}`);
@@ -184,7 +185,7 @@ export const handler = async (event) => {
             SUM(TRY_CAST(line_item_usage_amount AS DOUBLE)) as usage_amount,
             SUM(TRY_CAST(line_item_unblended_cost AS DOUBLE)) as total_cost
           FROM "${database}"."${tableName}"
-          WHERE "$path" LIKE '%/${awsAccountId}/%'
+          WHERE "$path" LIKE '%/${tenantId}/%'
             AND line_item_usage_start_date IS NOT NULL
           GROUP BY 1, 2, 3, 4, 5
         `;

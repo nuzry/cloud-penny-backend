@@ -99,16 +99,17 @@ export const handler = async (event) => {
         s.Sid !== "AllowCURPutObject" &&
         s.Sid !== "AllowBCMDataExports" &&
         s.Sid !== "EnableAWSDataExportsToWriteToS3" &&
-        s.Sid !== `tenant-${awsAccountId}`
+        s.Sid !== `tenant-${awsAccountId}` &&
+        s.Sid !== `tenant-${tenantId}`
       );
 
       // Add a fresh, tightly-scoped statement for this tenant
       policyObj.Statement.push({
-        Sid: `tenant-${awsAccountId}`,
+        Sid: `tenant-${tenantId}`,
         Effect: "Allow",
         Principal: { Service: "bcm-data-exports.amazonaws.com" },
-        Action: "s3:PutObject",
-        Resource: `arn:aws:s3:::${BUCKET}/*`,
+        Action: ["s3:PutObject", "s3:GetBucketPolicy"],
+        Resource: [`arn:aws:s3:::${BUCKET}`, `arn:aws:s3:::${BUCKET}/*`],
         Condition: {
           ArnLike: {
             "aws:SourceArn": `arn:aws:bcm-data-exports:us-east-1:${awsAccountId}:export/*`
@@ -140,7 +141,7 @@ export const handler = async (event) => {
     `?templateURL=${templateURL}` +
     `&stackName=CloudPenny-Export-${shortId}` +
     `&param_TenantId=${tenantId}` +
-    `&param_S3Prefix=${awsAccountId}` +
+    `&param_S3Prefix=${tenantId}` +
     `&param_CentralBucketName=${BUCKET}` +
     `&param_CentralBucketRegion=${process.env.AWS_REGION ?? "ap-southeast-1"}` +
     `&param_ExportName=${exportName}` +

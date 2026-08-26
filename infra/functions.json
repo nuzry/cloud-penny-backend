@@ -172,5 +172,21 @@
     "routes": [
       { "method": "GET", "path": "/api/v1/alerts" }
     ]
+  },
+  {
+    "name": "cloud-penny-chat-handler",
+    "description": "Handler for Penny AI chat endpoint using Bedrock",
+    "aws_name_override": "cloud-penny-chat-handler",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 256,
+    "timeout": 30,
+    "environment": {
+      "TENANTS_TABLE": "cloudpenny-tenants",
+      "ATHENA_RESULTS_BUCKET": "cloud-penny-athena-results-dev"
+    },
+    "routes": [
+      { "method": "POST", "path": "/api/v1/chat" }
+    ]
   }
 ]
