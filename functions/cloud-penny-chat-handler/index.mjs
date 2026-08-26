@@ -9,7 +9,7 @@ const docClient = DynamoDBDocumentClient.from(ddbClient);
 const bedrockClient = new BedrockRuntimeClient({});
 
 const TENANTS_TABLE = process.env.TENANTS_TABLE;
-const MODEL_ID = "anthropic.claude-3-5-sonnet-20240620-v1:0";
+const MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"; // Using Global Cross-Region for Claude Haiku 4.5
 
 // Hard ceiling on tool-use round trips per user message. Prevents a single
 // request from spiraling into dozens of Bedrock calls (and burning the
