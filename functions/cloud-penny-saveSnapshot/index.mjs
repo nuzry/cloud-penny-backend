@@ -1,14 +1,11 @@
 import { AthenaClient, GetQueryExecutionCommand, GetQueryResultsCommand } from "@aws-sdk/client-athena";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const athena = new AthenaClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" }));
-const s3 = new S3Client({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
 
 const SNAPSHOTS_TABLE = process.env.SNAPSHOTS_TABLE ?? "cloudpenny-snapshots-dev";
-const SNAPSHOTS_DATA_BUCKET = process.env.SNAPSHOTS_DATA_BUCKET;
 
 export const handler = async (event) => {
   console.log("=== saveSnapshot Lambda INVOKED ===");
@@ -133,11 +130,10 @@ export const handler = async (event) => {
       dailySpend[usageDate] = (dailySpend[usageDate] || 0) + cost;
 
       if (!dailyData[usageDate]) {
-        dailyData[usageDate] = { totalCost: 0, services: {}, items: [] };
+        dailyData[usageDate] = { totalCost: 0, services: {} };
       }
       dailyData[usageDate].totalCost += cost;
       dailyData[usageDate].services[serviceName] = (dailyData[usageDate].services[serviceName] || 0) + cost;
-      dailyData[usageDate].items.push({ service: serviceName, operation, region, lineItemType, usageAmount, cost });
     }
 
     if (!currentMonth) {
@@ -195,27 +191,6 @@ export const handler = async (event) => {
     const dailyPromises = Object.entries(dailyData).map(async ([date, data]) => {
       const dailySnapshotId = `DAY#${date}`;
       
-      // Save items to S3
-      const s3Key = `${tenantId}/${dailySnapshotId}.json`;
-      let itemsUrl = null;
-      
-      if (SNAPSHOTS_DATA_BUCKET) {
-        try {
-          await s3.send(new PutObjectCommand({
-            Bucket: SNAPSHOTS_DATA_BUCKET,
-            Key: s3Key,
-            Body: JSON.stringify(data.items),
-            ContentType: "application/json"
-          }));
-          itemsUrl = `s3://${SNAPSHOTS_DATA_BUCKET}/${s3Key}`;
-        } catch (s3Err) {
-          console.error(`[STEP 6 FAIL] Failed to write items to S3 for ${dailySnapshotId}:`, s3Err);
-          // We will still write to DynamoDB, but itemsUrl will be null
-        }
-      } else {
-        console.warn(`[STEP 6 WARN] SNAPSHOTS_DATA_BUCKET not configured. Items will not be saved for ${dailySnapshotId}.`);
-      }
-
       try {
         await dynamo.send(new UpdateCommand({
           TableName: SNAPSHOTS_TABLE,
@@ -224,7 +199,6 @@ export const handler = async (event) => {
             SET totalCost = :tc,
                 currency = :cur,
                 services = :svc,
-                itemsUrl = :itemsUrl,
                 updatedAt = :ua,
                 awsAccountId = :acc
           `,
@@ -232,7 +206,6 @@ export const handler = async (event) => {
             ":tc": data.totalCost,
             ":cur": "USD",
             ":svc": data.services,
-            ":itemsUrl": itemsUrl || null,
             ":ua": new Date().toISOString(),
             ":acc": awsAccountId
           }
