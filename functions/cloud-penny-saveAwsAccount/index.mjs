@@ -108,8 +108,8 @@ export const handler = async (event) => {
         Sid: `tenant-${tenantId}`,
         Effect: "Allow",
         Principal: { Service: "bcm-data-exports.amazonaws.com" },
-        Action: ["s3:PutObject", "s3:GetBucketPolicy"],
-        Resource: [`arn:aws:s3:::${BUCKET}`, `arn:aws:s3:::${BUCKET}/*`],
+        Action: "s3:PutObject",
+        Resource: `arn:aws:s3:::${BUCKET}/*`,
         Condition: {
           ArnLike: {
             "aws:SourceArn": `arn:aws:bcm-data-exports:us-east-1:${awsAccountId}:export/*`
