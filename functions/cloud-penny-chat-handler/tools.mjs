@@ -1,4 +1,4 @@
-import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand } from "@aws-sdk/lib-dynamodb";
 
 const SNAPSHOTS_TABLE = process.env.SNAPSHOTS_TABLE || "cloudpenny-snapshots-dev";
 
@@ -89,30 +89,32 @@ export const toolDefinitions = [
 
 export const handleToolUse = async (docClient, tenantId, toolName, input) => {
   console.log(`[TOOL CALLED] ${toolName} for tenant ${tenantId}`, input);
-  
+
   try {
     switch (toolName) {
       case "getMonthlySpend":
         return await getMonthlySpend(docClient, tenantId, input.month);
-      
+
       case "getSpendByService":
         return await getSpendByService(docClient, tenantId, input.month);
-      
+
       case "compareSpendPeriods":
         return await compareSpendPeriods(docClient, tenantId, input.currentMonth, input.previousMonth);
-      
+
       case "getCostTrend":
         return await getCostTrend(docClient, tenantId, input.startMonth, input.endMonth);
-      
+
       case "getTopCostDrivers":
         return await getTopCostDrivers(docClient, tenantId, input.currentMonth, input.previousMonth);
 
       default:
-        throw new Error(`Tool ${toolName} not found.`);
+        // Surfaced as a normal tool result (not thrown) so the model gets a
+        // clean signal instead of the whole request failing.
+        return { error: `Tool ${toolName} not found.` };
     }
   } catch (error) {
     console.error(`[TOOL ERROR] ${toolName}:`, error);
-    return { error: error.message };
+    return { error: error.message || "Tool execution failed unexpectedly." };
   }
 };
 
@@ -128,8 +130,10 @@ async function fetchSnapshot(docClient, tenantId, month) {
 
 async function getMonthlySpend(docClient, tenantId, month) {
   const data = await fetchSnapshot(docClient, tenantId, month);
-  if (!data) return { error: `No cost data found for month ${month}.` };
-  
+  if (!data) {
+    return { error: `No cost data found for month ${month}.`, noData: true };
+  }
+
   return {
     month,
     totalCost: data.totalCost,
@@ -139,8 +143,10 @@ async function getMonthlySpend(docClient, tenantId, month) {
 
 async function getSpendByService(docClient, tenantId, month) {
   const data = await fetchSnapshot(docClient, tenantId, month);
-  if (!data) return { error: `No cost data found for month ${month}.` };
-  
+  if (!data) {
+    return { error: `No cost data found for month ${month}.`, noData: true };
+  }
+
   return {
     month,
     services: data.services
@@ -152,9 +158,11 @@ async function compareSpendPeriods(docClient, tenantId, currentMonth, previousMo
     fetchSnapshot(docClient, tenantId, currentMonth),
     fetchSnapshot(docClient, tenantId, previousMonth)
   ]);
-  
-  if (!current && !previous) return { error: `No data found for both ${currentMonth} and ${previousMonth}.` };
-  
+
+  if (!current && !previous) {
+    return { error: `No data found for either ${currentMonth} or ${previousMonth}.`, noData: true };
+  }
+
   const currentCost = current ? current.totalCost : 0;
   const previousCost = previous ? previous.totalCost : 0;
   const absoluteChange = currentCost - previousCost;
@@ -166,7 +174,8 @@ async function compareSpendPeriods(docClient, tenantId, currentMonth, previousMo
     currentCost,
     previousCost,
     absoluteChange,
-    percentageChange
+    percentageChange,
+    partialData: !current || !previous
   };
 }
 
@@ -175,10 +184,16 @@ async function getCostTrend(docClient, tenantId, startMonth, endMonth) {
   const months = [];
   let current = new Date(`${startMonth}-01T00:00:00Z`);
   const end = new Date(`${endMonth}-01T00:00:00Z`);
-  
+
+  if (isNaN(current.getTime()) || isNaN(end.getTime())) {
+    return { error: "startMonth and endMonth must be valid YYYY-MM values.", noData: true };
+  }
+
   // Guard against excessive queries or bad inputs
-  if (current > end) return { error: "startMonth must be before endMonth." };
-  
+  if (current > end) {
+    return { error: "startMonth must be before endMonth.", noData: true };
+  }
+
   let iterations = 0;
   while (current <= end && iterations < 12) {
     const yyyy = current.getUTCFullYear();
@@ -187,20 +202,23 @@ async function getCostTrend(docClient, tenantId, startMonth, endMonth) {
     current.setUTCMonth(current.getUTCMonth() + 1);
     iterations++;
   }
-  
+
   if (current <= end) {
     console.warn("Trend requested more than 12 months. Truncating to 12 months.");
   }
 
-  const results = [];
-  for (const month of months) {
-    const data = await fetchSnapshot(docClient, tenantId, month);
-    results.push({
-      month,
-      totalCost: data ? data.totalCost : 0
-    });
+  const results = await Promise.all(
+    months.map(async (month) => {
+      const data = await fetchSnapshot(docClient, tenantId, month);
+      return { month, totalCost: data ? data.totalCost : 0, hasData: !!data };
+    })
+  );
+
+  const anyData = results.some(r => r.hasData);
+  if (!anyData) {
+    return { error: `No cost data found for any month between ${startMonth} and ${endMonth}.`, noData: true };
   }
-  
+
   return { trend: results };
 }
 
@@ -209,18 +227,22 @@ async function getTopCostDrivers(docClient, tenantId, currentMonth, previousMont
     fetchSnapshot(docClient, tenantId, currentMonth),
     fetchSnapshot(docClient, tenantId, previousMonth)
   ]);
-  
+
+  if (!current && !previous) {
+    return { error: `No data found for either ${currentMonth} or ${previousMonth}.`, noData: true };
+  }
+
   const currentServices = current ? (current.services || {}) : {};
   const previousServices = previous ? (previous.services || {}) : {};
-  
+
   const allServices = new Set([...Object.keys(currentServices), ...Object.keys(previousServices)]);
   const drivers = [];
-  
+
   for (const service of allServices) {
     const currCost = currentServices[service] || 0;
     const prevCost = previousServices[service] || 0;
     const change = currCost - prevCost;
-    
+
     // Only care about increases or decreases > $0.01
     if (Math.abs(change) > 0.01) {
       drivers.push({
@@ -231,14 +253,15 @@ async function getTopCostDrivers(docClient, tenantId, currentMonth, previousMont
       });
     }
   }
-  
+
   // Sort by highest absolute change (increase first)
   drivers.sort((a, b) => b.absoluteChange - a.absoluteChange);
-  
+
   return {
     currentMonth,
     previousMonth,
     topIncreases: drivers.filter(d => d.absoluteChange > 0).slice(0, 5),
-    topDecreases: drivers.filter(d => d.absoluteChange < 0).reverse().slice(0, 5)
+    topDecreases: drivers.filter(d => d.absoluteChange < 0).reverse().slice(0, 5),
+    partialData: !current || !previous
   };
 }
