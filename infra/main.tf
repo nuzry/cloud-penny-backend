@@ -536,7 +536,27 @@ resource "aws_iam_role_policy" "lambda_ses_access" {
   })
 }
 
+# -----------------------------------------------------------
+# LAMBDA BEDROCK PERMISSIONS
+# -----------------------------------------------------------
 
+resource "aws_iam_role_policy" "lambda_bedrock_access" {
+  name = "${var.project_name}-lambda-bedrock-access-${var.environment}"
+  role = data.aws_iam_role.lambda_role.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "bedrock:InvokeModel"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
 
 resource "aws_dynamodb_table" "alerts" {
   name         = "cloudpenny-alerts-${var.environment}"

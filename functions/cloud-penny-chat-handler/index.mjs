@@ -23,6 +23,7 @@ const extractTenantId = (event) =>
   null;
 
 export const handler = async (event) => {
+  console.log("INCOMING EVENT:", JSON.stringify(event));
   const method = event.requestContext?.http?.method || event.httpMethod;
   if (method === "OPTIONS") {
     return { statusCode: 200, headers: corsHeaders, body: "" };
