@@ -488,7 +488,8 @@ resource "aws_iam_role_policy" "lambda_athena_dynamo" {
           "dynamodb:PutItem",
           "dynamodb:UpdateItem",
           "dynamodb:GetItem",
-          "dynamodb:Query"
+          "dynamodb:Query",
+          "dynamodb:BatchWriteItem"
         ]
         Resource = [aws_dynamodb_table.snapshots.arn]
       }
