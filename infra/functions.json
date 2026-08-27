@@ -190,5 +190,103 @@
     "routes": [
       { "method": "POST", "path": "/api/v1/chat" }
     ]
+  },
+  {
+    "name": "cloud-penny-createConversation",
+    "description": "Create a new support conversation and relay the first message to Telegram",
+    "aws_name_override": "cloud-penny-createConversation",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 128,
+    "timeout": 15,
+    "environment": {
+      "SUPPORT_TABLE": "cloudpenny-support-dev",
+      "TENANTS_TABLE": "cloudpenny-tenants",
+      "TELEGRAM_SECRET_NAME": "cloudpenny-telegram-bot-dev",
+      "TELEGRAM_CHAT_ID": "-5586306781"
+    },
+    "routes": [
+      { "method": "POST", "path": "/api/v1/support/conversations" }
+    ]
+  },
+  {
+    "name": "cloud-penny-sendSupportMessage",
+    "description": "Send a follow-up message on an OPEN support conversation and relay it to Telegram",
+    "aws_name_override": "cloud-penny-sendSupportMessage",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 128,
+    "timeout": 15,
+    "environment": {
+      "SUPPORT_TABLE": "cloudpenny-support-dev",
+      "TELEGRAM_SECRET_NAME": "cloudpenny-telegram-bot-dev",
+      "TELEGRAM_CHAT_ID": "-5586306781"
+    },
+    "routes": [
+      { "method": "POST", "path": "/api/v1/support/conversations/{conversationId}/messages" }
+    ]
+  },
+  {
+    "name": "cloud-penny-getConversations",
+    "description": "List the tenant's own support conversations",
+    "aws_name_override": "cloud-penny-getConversations",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 128,
+    "timeout": 10,
+    "environment": {
+      "SUPPORT_TABLE": "cloudpenny-support-dev"
+    },
+    "routes": [
+      { "method": "GET", "path": "/api/v1/support/conversations" }
+    ]
+  },
+  {
+    "name": "cloud-penny-getConversationMessages",
+    "description": "Get one support conversation's metadata and full message history",
+    "aws_name_override": "cloud-penny-getConversationMessages",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 128,
+    "timeout": 10,
+    "environment": {
+      "SUPPORT_TABLE": "cloudpenny-support-dev"
+    },
+    "routes": [
+      { "method": "GET", "path": "/api/v1/support/conversations/{conversationId}/messages" }
+    ]
+  },
+  {
+    "name": "cloud-penny-resolveConversation",
+    "description": "Client marks their own support conversation resolved, locking it as read-only history",
+    "aws_name_override": "cloud-penny-resolveConversation",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 128,
+    "timeout": 10,
+    "environment": {
+      "SUPPORT_TABLE": "cloudpenny-support-dev",
+      "TELEGRAM_SECRET_NAME": "cloudpenny-telegram-bot-dev",
+      "TELEGRAM_CHAT_ID": "-5586306781"
+    },
+    "routes": [
+      { "method": "PUT", "path": "/api/v1/support/conversations/{conversationId}/resolve" }
+    ]
+  },
+  {
+    "name": "cloud-penny-telegramWebhook",
+    "description": "Public webhook: receives admin replies from the Telegram support group and relays them back to the client",
+    "aws_name_override": "cloud-penny-telegramWebhook",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 128,
+    "timeout": 10,
+    "environment": {
+      "SUPPORT_TABLE": "cloudpenny-support-dev",
+      "TELEGRAM_SECRET_NAME": "cloudpenny-telegram-bot-dev"
+    },
+    "routes": [
+      { "method": "POST", "path": "/api/v1/support/telegram-webhook", "public": true }
+    ]
   }
 ]

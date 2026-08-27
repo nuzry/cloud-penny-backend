@@ -196,8 +196,12 @@ resource "aws_apigatewayv2_route" "routes" {
   api_id    = data.aws_apigatewayv2_api.main.id
   route_key = "${each.value.method} ${each.value.path}"
 
-  authorization_type = "JWT"
-  authorizer_id      = var.api_gateway_authorizer_id
+  # "public" routes (functions.json route.public = true) skip the Cognito
+  # JWT authorizer entirely — only for endpoints a third party must be able
+  # to call directly (e.g. the Telegram webhook), which then MUST do its own
+  # access control inside the handler since nothing in front of it will.
+  authorization_type = each.value.public ? "NONE" : "JWT"
+  authorizer_id      = each.value.public ? null : var.api_gateway_authorizer_id
 
   # Wire route integration for the owning function
   target = "integrations/${aws_apigatewayv2_integration.functions[each.value.function_name].id}"
@@ -621,6 +625,97 @@ resource "aws_iam_role_policy" "lambda_alerts_dynamo" {
         ]
         Effect   = "Allow"
         Resource = aws_dynamodb_table.alerts.arn
+      }
+    ]
+  })
+}
+
+# -----------------------------------------------------------
+# SUPPORT CHAT TABLE (Contact page conversations + Telegram bridge)
+# -----------------------------------------------------------
+# Single-table design matching cloudpenny-snapshots-<env>'s convention:
+#   CONVMETA#<conversationId>                       -> conversation metadata
+#   CONVMSG#<conversationId>#<paddedTs>#<messageId>  -> one message
+# Distinct prefixes (not one nested under the other) so "list my
+# conversations" and "list this conversation's messages" are both a single
+# clean begins_with Query, never mixed together or scanned.
+
+resource "aws_dynamodb_table" "support" {
+  name         = "cloudpenny-support-${var.environment}"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "tenantId"
+  range_key    = "sortKey"
+
+  attribute {
+    name = "tenantId"
+    type = "S"
+  }
+  attribute {
+    name = "sortKey"
+    type = "S"
+  }
+  attribute {
+    name = "telegramMessageId"
+    type = "N"
+  }
+
+  # Every message relayed to Telegram carries this attribute. When an admin
+  # replies in the group, the webhook Queries this index on the message_id
+  # Telegram hands back to resolve which conversation the reply belongs to
+  # — the only way to route a reply without Telegram knowing about tenants.
+  global_secondary_index {
+    name            = "telegramMessageId-index"
+    hash_key        = "telegramMessageId"
+    projection_type = "ALL"
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_support_dynamo" {
+  name = "${var.project_name}-lambda-support-dynamo-${var.environment}"
+  role = data.aws_iam_role.lambda_role.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:PutItem",
+          "dynamodb:GetItem",
+          "dynamodb:UpdateItem",
+          "dynamodb:Query"
+        ]
+        Resource = [
+          aws_dynamodb_table.support.arn,
+          "${aws_dynamodb_table.support.arn}/index/*"
+        ]
+      }
+    ]
+  })
+}
+
+# -----------------------------------------------------------
+# TELEGRAM BOT ACCESS (Secrets Manager)
+# -----------------------------------------------------------
+# Bot token + webhook secret token, created out-of-band once the bot exists
+# (same pattern as the Groq key) — the raw values never pass through
+# Terraform state or any committed file.
+
+data "aws_secretsmanager_secret" "telegram_bot" {
+  name = "cloudpenny-telegram-bot-${var.environment}"
+}
+
+resource "aws_iam_role_policy" "lambda_telegram_secret_access" {
+  name = "${var.project_name}-lambda-telegram-secret-access-${var.environment}"
+  role = data.aws_iam_role.lambda_role.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = data.aws_secretsmanager_secret.telegram_bot.arn
       }
     ]
   })

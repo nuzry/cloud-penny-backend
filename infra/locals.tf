@@ -17,6 +17,12 @@ locals {
         function_name = fn.name
         method        = route.method
         path          = route.path
+        # Routes are JWT-authorized by default. A route can opt out with
+        # "public": true in functions.json — only for endpoints that must be
+        # callable by something other than this app's authenticated frontend
+        # (e.g. a third-party webhook), since that route then has NO
+        # authorizer at all and must do its own access control in-handler.
+        public = try(route.public, false)
         # Deterministic key: clientsme__GET__api_v1_clients_me
         # trimprefix removes the leading _ caused by paths starting with /
         key = "${fn.name}__${route.method}__${trimprefix(
