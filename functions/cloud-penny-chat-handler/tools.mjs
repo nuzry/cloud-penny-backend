@@ -29,7 +29,21 @@ export const toolDefinitions = [
     type: "function",
     function: {
       name: "getSpendByService",
-      description: "Returns the breakdown of AWS costs by individual services for a specific month.",
+      description: "Returns every AWS service the tenant used in a specific month along with its cost. To answer 'which service costs me the most' or 'what is my most-used/most significant service', call this and pick the entry with the highest cost yourself — there is no separate 'top service' tool.",
+      parameters: {
+        type: "object",
+        properties: {
+          month: { type: "string", description: "The month to query in YYYY-MM format, e.g., '2026-08'" }
+        },
+        required: ["month"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "getSpendByRegion",
+      description: "Returns the breakdown of AWS costs by AWS region (e.g. us-east-1) for a specific month. Use this for questions about where costs are geographically concentrated.",
       parameters: {
         type: "object",
         properties: {
@@ -98,6 +112,21 @@ export const toolDefinitions = [
         required: ["startDate", "endDate"]
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "getTopOperationsForService",
+      description: "Drills down into WHY a service costs what it does for a specific month, by returning its highest-cost individual operations (e.g. 'RunInstances', 'DataTransfer-Out') with their region and cost. Use this for 'why is X so expensive' or 'what specifically am I paying for within X' questions, after you already know X is a significant service (e.g. from getSpendByService).",
+      parameters: {
+        type: "object",
+        properties: {
+          month: { type: "string", description: "The month to query in YYYY-MM format, e.g., '2026-08'" },
+          service: { type: "string", description: "The exact service name as returned by getSpendByService, e.g. 'AmazonEC2'." }
+        },
+        required: ["month", "service"]
+      }
+    }
   }
 ];
 
@@ -114,6 +143,9 @@ export const handleToolUse = async (docClient, tenantId, toolName, input) => {
       case "getSpendByService":
         return await getSpendByService(docClient, tenantId, input.month);
 
+      case "getSpendByRegion":
+        return await getSpendByRegion(docClient, tenantId, input.month);
+
       case "compareSpendPeriods":
         return await compareSpendPeriods(docClient, tenantId, input.currentMonth, input.previousMonth);
 
@@ -125,6 +157,9 @@ export const handleToolUse = async (docClient, tenantId, toolName, input) => {
 
       case "getDailySpend":
         return await getDailySpend(docClient, tenantId, input.startDate, input.endDate);
+
+      case "getTopOperationsForService":
+        return await getTopOperationsForService(docClient, tenantId, input.month, input.service);
 
       default:
         // Surfaced as a normal tool result (not thrown) so the model gets a
@@ -178,6 +213,24 @@ async function getSpendByService(docClient, tenantId, month) {
     month,
     services: data.services
   };
+}
+
+async function getSpendByRegion(docClient, tenantId, month) {
+  if (!MONTH_RE.test(month || "")) {
+    return { error: `"${month}" is not a valid YYYY-MM month.`, noData: true };
+  }
+
+  const data = await fetchSnapshot(docClient, tenantId, month);
+  if (!data) {
+    return { error: `No cost data found for month ${month}.`, noData: true };
+  }
+
+  const regions = data.regions || {};
+  if (Object.keys(regions).length === 0) {
+    return { month, regions: {}, note: "No per-region cost data available for this month (some line items, like taxes or support, aren't tied to a region)." };
+  }
+
+  return { month, regions };
 }
 
 async function compareSpendPeriods(docClient, tenantId, currentMonth, previousMonth) {
@@ -358,3 +411,73 @@ async function getDailySpend(docClient, tenantId, startDate, endDate) {
 
   return { startDate, endDate, currency: "USD", days };
 }
+
+async function getTopOperationsForService(docClient, tenantId, month, service) {
+  if (!MONTH_RE.test(month || "")) {
+    return { error: `"${month}" is not a valid YYYY-MM month.`, noData: true };
+  }
+  if (!service || typeof service !== "string") {
+    return { error: "service is required — call getSpendByService first to get the exact service name.", noData: true };
+  }
+
+  // Query every DAY# item for the month (bounded to <=31 items, no Scan) and
+  // aggregate their already-bounded `items` arrays in memory. Cheaper and
+  // simpler than maintaining a separate operation-level rollup in DynamoDB,
+  // and reuses exactly the data saveSnapshot already wrote per day.
+  const { Items } = await docClient.send(new QueryCommand({
+    TableName: SNAPSHOTS_TABLE,
+    KeyConditionExpression: "tenantId = :t AND begins_with(snapshotId, :prefix)",
+    ExpressionAttributeValues: {
+      ":t": tenantId,
+      ":prefix": `DAY#${month}`
+    }
+  }));
+
+  const dayItems = Items || [];
+  if (dayItems.length === 0) {
+    return { error: `No cost data found for month ${month}.`, noData: true };
+  }
+
+  const byOperation = new Map(); // `${operation}|${region}` -> { operation, region, cost, usageAmount }
+  let serviceTotalCost = 0;
+  let matchedAnyRow = false;
+
+  for (const day of dayItems) {
+    for (const row of day.items || []) {
+      if (row.service !== service) continue;
+      matchedAnyRow = true;
+      serviceTotalCost += row.cost || 0;
+
+      const key = `${row.operation}|${row.region}`;
+      const existing = byOperation.get(key);
+      if (existing) {
+        existing.cost += row.cost || 0;
+        existing.usageAmount += row.usageAmount || 0;
+      } else {
+        byOperation.set(key, { operation: row.operation, region: row.region, cost: row.cost || 0, usageAmount: row.usageAmount || 0 });
+      }
+    }
+  }
+
+  if (!matchedAnyRow) {
+    return { error: `No operation-level data found for service "${service}" in ${month}. Double-check the exact service name via getSpendByService.`, noData: true };
+  }
+
+  const operations = [...byOperation.values()]
+    .sort((a, b) => Math.abs(b.cost) - Math.abs(a.cost))
+    .slice(0, 10)
+    .map(o => ({ ...o, cost: round(o.cost), usageAmount: round(o.usageAmount) }));
+
+  return {
+    month,
+    service,
+    serviceTotalCost: round(serviceTotalCost),
+    currency: "USD",
+    topOperations: operations,
+    note: operations.some(o => o.operation === "Other (aggregated)")
+      ? "'Other (aggregated)' groups smaller operations that fell outside the top items tracked for some days — the individual operation names within it aren't available."
+      : undefined
+  };
+}
+
+const round = (n) => Math.round(n * 1e8) / 1e8;

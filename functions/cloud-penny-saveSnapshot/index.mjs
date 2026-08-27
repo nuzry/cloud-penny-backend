@@ -193,6 +193,7 @@ export const handler = async (event) => {
     const dayItems = [];
     let monthTotalCost = 0;
     const monthServices = {};
+    const monthRegions = {};
     const dailyTotals = {};
 
     for (const [date, rows] of byDay.entries()) {
@@ -265,9 +266,13 @@ export const handler = async (event) => {
       for (const [svc, cost] of Object.entries(services)) {
         monthServices[svc] = (monthServices[svc] || 0) + cost;
       }
+      for (const [rgn, cost] of Object.entries(regions)) {
+        monthRegions[rgn] = (monthRegions[rgn] || 0) + cost;
+      }
     }
 
     const roundedMonthServices = Object.fromEntries(Object.entries(monthServices).map(([k, v]) => [k, round(v)]));
+    const roundedMonthRegions = Object.fromEntries(Object.entries(monthRegions).map(([k, v]) => [k, round(v)]));
 
     console.log(`[STEP 5 OK] Built ${dayItems.length} day item(s). Month total: $${round(monthTotalCost)}, services: ${Object.keys(roundedMonthServices).length}`);
 
@@ -317,6 +322,7 @@ export const handler = async (event) => {
         SET totalCost = :tc,
             currency = :cur,
             services = :svc,
+            regions = :rgn,
             dailyTotals = :dt,
             dayCount = :dc,
             updatedAt = :ua,
@@ -326,6 +332,7 @@ export const handler = async (event) => {
         ":tc": round(monthTotalCost),
         ":cur": "USD",
         ":svc": roundedMonthServices,
+        ":rgn": roundedMonthRegions,
         ":dt": dailyTotals,
         ":dc": dayItems.length,
         ":ua": new Date().toISOString(),
