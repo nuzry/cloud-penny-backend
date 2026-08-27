@@ -1,11 +1,15 @@
 import { AthenaClient, GetQueryExecutionCommand, GetQueryResultsCommand } from "@aws-sdk/client-athena";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const athena = new AthenaClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" }));
+const s3 = new S3Client({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
 
 const SNAPSHOTS_TABLE = process.env.SNAPSHOTS_TABLE ?? "cloudpenny-snapshots-dev";
+const env = process.env.ENVIRONMENT || "dev";
+const SNAPSHOTS_BUCKET = `cloudpenny-snapshot-data-${env}`;
 
 export const handler = async (event) => {
   console.log("=== saveSnapshot Lambda INVOKED ===");
@@ -98,7 +102,7 @@ export const handler = async (event) => {
     let totalCost = 0;
     const services = {};
     const dailySpend = {};
-    const dailyData = {};
+    const dailyItems = [];
     let currentMonth = "";
     let parseErrors = 0;
 
@@ -129,11 +133,15 @@ export const handler = async (event) => {
       services[serviceName] = (services[serviceName] || 0) + cost;
       dailySpend[usageDate] = (dailySpend[usageDate] || 0) + cost;
 
-      if (!dailyData[usageDate]) {
-        dailyData[usageDate] = { totalCost: 0, services: {} };
-      }
-      dailyData[usageDate].totalCost += cost;
-      dailyData[usageDate].services[serviceName] = (dailyData[usageDate].services[serviceName] || 0) + cost;
+      dailyItems.push({
+        date: usageDate,
+        service: serviceName,
+        operation: operation,
+        region: region,
+        lineItemType: lineItemType,
+        usageAmount: usageAmount,
+        cost: cost
+      });
     }
 
     if (!currentMonth) {
@@ -143,7 +151,6 @@ export const handler = async (event) => {
     }
 
     const snapshotId = `MONTH#${currentMonth}`;
-    const dailyDates = Object.keys(dailyData);
 
     console.log(`[STEP 4 OK] Aggregation complete:`);
     console.log(`  - Snapshot ID: ${snapshotId}`);
@@ -182,49 +189,33 @@ export const handler = async (event) => {
       // Don't throw yet — still try to write daily snapshots
     }
 
-    // 6. Upsert Daily Snapshots
-    console.log(`[STEP 6] Writing ${dailyDates.length} DAILY snapshots to DynamoDB...`);
+    // 6. Upload Detailed Data to S3 for the Dashboard
+    const s3Key = `${tenantId}/dashboard-${snapshotId}.json`;
+    console.log(`[STEP 6] Uploading ${dailyItems.length} detailed daily items to S3: s3://${SNAPSHOTS_BUCKET}/${s3Key}`);
     
-    let dailySuccessCount = 0;
-    let dailyFailCount = 0;
-
-    const dailyPromises = Object.entries(dailyData).map(async ([date, data]) => {
-      const dailySnapshotId = `DAY#${date}`;
+    try {
+      const payload = {
+        success: true,
+        data: {
+          dailyItems: dailyItems,
+          totalCost: totalCost,
+          currency: "USD",
+          updatedAt: new Date().toISOString()
+        }
+      };
       
-      try {
-        await dynamo.send(new UpdateCommand({
-          TableName: SNAPSHOTS_TABLE,
-          Key: { tenantId, snapshotId: dailySnapshotId },
-          UpdateExpression: `
-            SET totalCost = :tc,
-                currency = :cur,
-                services = :svc,
-                updatedAt = :ua,
-                awsAccountId = :acc
-          `,
-          ExpressionAttributeValues: {
-            ":tc": data.totalCost,
-            ":cur": "USD",
-            ":svc": data.services,
-            ":ua": new Date().toISOString(),
-            ":acc": awsAccountId
-          }
-        }));
-        dailySuccessCount++;
-      } catch (dailyErr) {
-        dailyFailCount++;
-        console.error(`[STEP 6 FAIL] Failed to write daily snapshot ${dailySnapshotId}:`, dailyErr);
-      }
-    });
-
-    await Promise.all(dailyPromises);
-
-    console.log(`[STEP 6 DONE] Daily snapshots: ${dailySuccessCount} succeeded, ${dailyFailCount} failed`);
-    console.log(`=== saveSnapshot Lambda COMPLETE for tenant ${tenantId} ===`);
-
-    if (dailyFailCount > 0) {
-      console.warn(`[WARNING] ${dailyFailCount} daily snapshots failed to write. Check errors above.`);
+      await s3.send(new PutObjectCommand({
+        Bucket: SNAPSHOTS_BUCKET,
+        Key: s3Key,
+        Body: JSON.stringify(payload),
+        ContentType: "application/json"
+      }));
+      console.log(`[STEP 6 OK] S3 upload successful.`);
+    } catch (s3Err) {
+      console.error(`[STEP 6 FAIL] Failed to upload JSON to S3:`, s3Err);
     }
+
+    console.log(`=== saveSnapshot Lambda COMPLETE for tenant ${tenantId} ===`);
 
   } catch (err) {
     console.error("=== saveSnapshot Lambda FATAL ERROR ===", err);

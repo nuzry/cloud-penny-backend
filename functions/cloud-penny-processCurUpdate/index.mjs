@@ -1,7 +1,7 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { AthenaClient, StartQueryExecutionCommand } from "@aws-sdk/client-athena";
-import { GlueClient, GetTablesCommand } from "@aws-sdk/client-glue";
+import { GlueClient, GetTablesCommand, GetCrawlerCommand, StartCrawlerCommand } from "@aws-sdk/client-glue";
 
 const athena = new AthenaClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
 const glue = new GlueClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
@@ -30,6 +30,7 @@ export const handler = async (event) => {
       for (const s3Record of s3Event.Records || []) {
         const objectKey = decodeURIComponent(s3Record.s3.object.key.replace(/\+/g, " "));
         const bucketName = s3Record.s3?.bucket?.name || "unknown";
+        const eventTime = new Date(s3Record.eventTime).getTime(); // When the S3 file was dropped
         console.log(`[STEP 1] Processing S3 event — Bucket: ${bucketName}, Key: ${objectKey}`);
 
         // ── VALIDATE S3 KEY STRUCTURE ──────────────────────────────────
@@ -124,7 +125,49 @@ export const handler = async (event) => {
           continue; // Skip downstream processing, message will be deleted from SQS since we don't throw an error
         }
 
-        // 4. Update Quota in DB and Proceed
+        // =========================================================
+        // START ATHENA QUERY
+        // =========================================================
+        const env = process.env.ENVIRONMENT || "dev";
+        const database = `cloudpenny_curs_${env}`;
+        
+        // =========================================================
+        // GLUE CRAWLER SYNCHRONIZATION
+        // =========================================================
+        const crawlerName = `cloudpenny-cur-crawler-${env}`;
+        console.log(`[CRAWLER] Checking status of Glue Crawler: ${crawlerName}`);
+        
+        try {
+          const crawlerRes = await glue.send(new GetCrawlerCommand({ Name: crawlerName }));
+          const state = crawlerRes.Crawler?.State; // READY, RUNNING, or STOPPING
+          const lastCrawlStartTime = crawlerRes.Crawler?.LastCrawl?.StartTime ? new Date(crawlerRes.Crawler.LastCrawl.StartTime).getTime() : 0;
+          
+          console.log(`[CRAWLER] Current state: ${state}`);
+          console.log(`[CRAWLER] Last crawl start time: ${lastCrawlStartTime}, S3 Event Time: ${eventTime}`);
+          
+          if (state === "RUNNING" || state === "STOPPING") {
+            // Crawler is busy. Throw to retry.
+            console.log(`[CRAWLER] Crawler is currently ${state}. Waiting for it to finish.`);
+            throw new Error(`Crawler ${crawlerName} is ${state}. SQS will retry.`);
+          } else if (state === "READY") {
+            // Check if the crawler needs to run for THIS file
+            if (lastCrawlStartTime < eventTime) {
+              console.log(`[CRAWLER] Crawler's last run (${lastCrawlStartTime}) is older than the S3 event (${eventTime}). Starting crawler...`);
+              await glue.send(new StartCrawlerCommand({ Name: crawlerName }));
+              throw new Error(`Crawler ${crawlerName} was READY but stale. Started it. SQS will retry.`);
+            } else {
+              console.log(`[CRAWLER] Crawler has already run since this file was dropped. Proceeding to Athena.`);
+            }
+          }
+        } catch (e) {
+          // If the error was thrown by us for SQS retry, propagate it!
+          if (e.message.includes("SQS will retry")) {
+            throw e;
+          }
+          console.warn("[CRAWLER WARN] Failed to get/start crawler, proceeding anyway...", e);
+        }
+
+        // 4. Update Quota in DB and Proceed (moved AFTER crawler check so retries don't burn quota)
         used += 1;
         
         await dynamo.send(new UpdateCommand({
@@ -138,13 +181,7 @@ export const handler = async (event) => {
         }));
 
         console.log(`[QUOTA ALLOWED] Tenant ${tenantId} (${awsAccountId}) using refresh ${used}/${quota} for ${today}.`);
-        
-        // =========================================================
-        // START ATHENA QUERY
-        // =========================================================
-        const env = process.env.ENVIRONMENT || "dev";
-        const database = `cloudpenny_curs_${env}`;
-        
+
         console.log(`[STEP 4] Looking up Glue tables in database: ${database}`);
         
         let tableName = `data`; // Fallback

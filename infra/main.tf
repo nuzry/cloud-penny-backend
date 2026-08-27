@@ -444,7 +444,9 @@ resource "aws_iam_role_policy" "lambda_athena_dynamo" {
           "glue:GetTable",
           "glue:GetTables",
           "glue:GetDatabase",
-          "glue:GetPartitions"
+          "glue:GetPartitions",
+          "glue:StartCrawler",
+          "glue:GetCrawler"
         ]
         Resource = ["*"]
       },

@@ -1,8 +1,13 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
+import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" }));
+const s3 = new S3Client({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
+
 const SNAPSHOTS_TABLE = process.env.SNAPSHOTS_TABLE || "cloudpenny-snapshots-dev";
+const env = process.env.ENVIRONMENT || "dev";
+const SNAPSHOTS_BUCKET = process.env.SNAPSHOTS_BUCKET || `cloudpenny-snapshot-data-${env}`;
 
 const extractTenantId = (event) =>
   event?.requestContext?.authorizer?.jwt?.claims?.sub ??
@@ -22,7 +27,44 @@ export const handler = async (event) => {
 
     console.log(`Fetching dashboard data for tenant ${tenantId}, month ${currentMonthStr}`);
 
-    // Query all daily records for this month
+    // 1. Try to fetch the detailed JSON file from S3 first (new architecture)
+    try {
+      const s3Key = `${tenantId}/dashboard-MONTH#${currentMonthStr}.json`;
+      console.log(`[S3] Attempting to fetch detailed dashboard data from s3://${SNAPSHOTS_BUCKET}/${s3Key}`);
+      
+      const s3Res = await s3.send(new GetObjectCommand({
+        Bucket: SNAPSHOTS_BUCKET,
+        Key: s3Key
+      }));
+      
+      // Convert stream to string
+      const streamToString = (stream) =>
+        new Promise((resolve, reject) => {
+          const chunks = [];
+          stream.on("data", (chunk) => chunks.push(chunk));
+          stream.on("error", reject);
+          stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        });
+
+      const bodyContents = await streamToString(s3Res.Body);
+      const parsedData = JSON.parse(bodyContents);
+      
+      console.log(`[S3] Successfully fetched and parsed detailed dashboard data.`);
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(parsedData)
+      };
+    } catch (s3Err) {
+      if (s3Err.name === 'NoSuchKey' || s3Err.name === 'NotFound') {
+        console.log(`[S3] No detailed S3 JSON found for this month (fallback to DynamoDB).`);
+      } else {
+        console.warn(`[S3 WARN] Failed to fetch from S3:`, s3Err);
+      }
+    }
+
+    // 2. Fallback to querying all daily records for this month from DynamoDB (old architecture)
+    console.log(`[DynamoDB] Falling back to querying DAY# records for tenant ${tenantId}`);
     const queryRes = await dynamo.send(new QueryCommand({
       TableName: SNAPSHOTS_TABLE,
       KeyConditionExpression: "tenantId = :t AND begins_with(snapshotId, :prefix)",
