@@ -215,7 +215,7 @@ export const handler = async (event) => {
           --awsAccountId=${awsAccountId}
           SELECT 
             COALESCE(line_item_product_code, 'Unknown') as service,
-            COALESCE(line_item_operation, 'Unknown') as operation,
+            COALESCE(line_item_operation, 'None') as operation,
             COALESCE(product_region_code, '') as region,
             COALESCE(line_item_line_item_type, 'Usage') as line_item_type,
             DATE(line_item_usage_start_date) as usage_date,

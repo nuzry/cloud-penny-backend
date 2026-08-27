@@ -117,12 +117,17 @@ export const handler = async (event) => {
 
       // SELECT service, operation, region, line_item_type, usage_date, usage_amount, total_cost
       const serviceName = row[0]?.VarCharValue || "Unknown";
-      const operation = row[1]?.VarCharValue || "Unknown";
+      const operation = row[1]?.VarCharValue || "None";
       const region = row[2]?.VarCharValue || "";
       const lineItemType = row[3]?.VarCharValue || "Usage";
       const usageDate = row[4]?.VarCharValue || ""; // YYYY-MM-DD
       const usageAmount = parseFloat(row[5]?.VarCharValue || "0");
       const cost = parseFloat(row[6]?.VarCharValue || "0");
+
+      // Skip 0 cost items as requested
+      if (cost === 0) {
+        continue;
+      }
 
       if (!currentMonth && usageDate) {
         currentMonth = usageDate.substring(0, 7); // Extract YYYY-MM
@@ -156,7 +161,7 @@ export const handler = async (event) => {
     console.log(`  - Snapshot ID: ${snapshotId}`);
     console.log(`  - Total Cost: $${totalCost.toFixed(4)}`);
     console.log(`  - Services: ${Object.keys(services).length}`);
-    console.log(`  - Daily dates: ${dailyDates.length} (${dailyDates.join(', ')})`);
+    console.log(`  - Daily dates: ${Object.keys(dailySpend).length}`);
     console.log(`  - Parse errors: ${parseErrors}`);
 
     // 5. Upsert Monthly Snapshot in DynamoDB
