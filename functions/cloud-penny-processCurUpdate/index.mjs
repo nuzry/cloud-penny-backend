@@ -12,6 +12,55 @@ const TABLE = process.env.TENANTS_TABLE ?? "cloudpenny-tenants";
 // Default quota if not set by the user (as approved in the plan)
 const DEFAULT_DAILY_QUOTA = 1;
 
+// ── Allow-lists for values interpolated into the Athena SQL string ─────────
+// StartQueryExecutionCommand has no bind-parameter API, so strict validation
+// (not just escaping) is the real defense against SQL injection here.
+const TENANT_ID_RE = /^[a-f0-9-]{8,64}$/i;           // Cognito sub (UUID shape)
+const AWS_ACCOUNT_ID_RE = /^\d{12}$/;                // AWS account IDs are always 12 digits
+const BILLING_PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/; // YYYY-MM
+
+// Belt-and-suspenders on top of the regex gates above — never trust a single layer.
+const sqlEscape = (value) => String(value).replace(/'/g, "''");
+
+// Atomically consumes one unit of the tenant's daily refresh quota.
+// Replaces the old GET-then-UPDATE pattern, which had a race window: two
+// concurrent SQS deliveries for the same tenant could both read the same
+// "used" count and both be allowed through, silently doubling the quota.
+// Instead this does two independent conditional UpdateCommands — each is
+// atomic on its own, so under concurrency only one delivery can win a given
+// day's "first refresh" reset, and increments beyond quota are rejected by
+// DynamoDB itself rather than by a stale in-memory read.
+async function tryConsumeQuota(tenantId, quota, today) {
+  try {
+    await dynamo.send(new UpdateCommand({
+      TableName: TABLE,
+      Key: { tenantId },
+      UpdateExpression: "SET dailyRefreshesUsed = dailyRefreshesUsed + :one",
+      ConditionExpression: "lastRefreshDate = :today AND dailyRefreshesUsed < :quota",
+      ExpressionAttributeValues: { ":one": 1, ":today": today, ":quota": quota }
+    }));
+    return true;
+  } catch (err) {
+    if (err.name !== "ConditionalCheckFailedException") throw err;
+  }
+
+  // Either this is the first refresh ever, or the first refresh of a new UTC day.
+  try {
+    await dynamo.send(new UpdateCommand({
+      TableName: TABLE,
+      Key: { tenantId },
+      UpdateExpression: "SET dailyRefreshesUsed = :one, lastRefreshDate = :today",
+      ConditionExpression: "attribute_not_exists(lastRefreshDate) OR lastRefreshDate <> :today",
+      ExpressionAttributeValues: { ":one": 1, ":today": today }
+    }));
+    return true;
+  } catch (err) {
+    if (err.name !== "ConditionalCheckFailedException") throw err;
+  }
+
+  return false; // Quota genuinely exhausted for today.
+}
+
 export const handler = async (event) => {
   console.log("=== processCurUpdate Lambda INVOKED ===");
   console.log("Received SQS Event:", JSON.stringify(event, null, 2));
@@ -79,6 +128,18 @@ export const handler = async (event) => {
         console.log(`  Billing Period:  ${billingPeriod}`);
         console.log(`  File Name:       ${fileName}`);
 
+        // 5. Both values get interpolated into the Athena SQL string below (no
+        // bind-parameter API is available via StartQueryExecutionCommand), so
+        // gate them against a strict allow-list before they're trusted further.
+        if (!TENANT_ID_RE.test(tenantId)) {
+          console.warn(`[STEP 1 SKIP] tenantId "${tenantId}" does not match expected Cognito sub shape. Skipping.`);
+          continue;
+        }
+        if (!BILLING_PERIOD_RE.test(billingPeriod)) {
+          console.warn(`[STEP 1 SKIP] billingPeriod "${billingPeriod}" is not a valid YYYY-MM value. Skipping.`);
+          continue;
+        }
+
         // 1. Lookup the tenantId in DynamoDB using GetCommand
         console.log(`[STEP 2] Fetching tenant from DynamoDB table "${TABLE}" for tenantId: ${tenantId}`);
         const getRes = await dynamo.send(new GetCommand({
@@ -97,31 +158,29 @@ export const handler = async (event) => {
           console.warn(`[STEP 2 FAIL] Tenant ${tenantId} does not have an awsAccountId connected. Skipping.`);
           continue;
         }
+        if (!AWS_ACCOUNT_ID_RE.test(awsAccountId)) {
+          // saveAwsAccount already validates this at write time — this is a
+          // defensive re-check since awsAccountId also gets interpolated into SQL.
+          console.warn(`[STEP 2 SKIP] Tenant ${tenantId} has a malformed awsAccountId "${awsAccountId}". Skipping.`);
+          continue;
+        }
         console.log(`[STEP 2 OK] Found tenant: ${tenantId}, AWS Account ID: ${awsAccountId}`);
 
-        // 2. Evaluate Quota
+        // 2. Evaluate Quota (just for logging here — the actual check-and-increment
+        // happens atomically in tryConsumeQuota() after the crawler sync below,
+        // so retries triggered by the crawler don't burn quota on their own).
         const today = new Date().toISOString().split('T')[0]; // Format: YYYY-MM-DD (UTC)
-        
+
         let quota = tenant.dailyRefreshQuota;
         if (quota === undefined || quota === null) {
           quota = DEFAULT_DAILY_QUOTA;
         }
-        
-        let used = tenant.dailyRefreshesUsed || 0;
-        let lastDate = tenant.lastRefreshDate || "";
 
-        console.log(`[STEP 3] Quota check — today(UTC): ${today}, lastRefreshDate: ${lastDate}, used: ${used}, quota: ${quota}`);
+        const usedSoFar = tenant.lastRefreshDate === today ? (tenant.dailyRefreshesUsed || 0) : 0;
+        console.log(`[STEP 3] Quota check — today(UTC): ${today}, lastRefreshDate: ${tenant.lastRefreshDate || ""}, used: ${usedSoFar}, quota: ${quota}`);
 
-        // Reset if it's a new day
-        if (lastDate !== today) {
-          console.log(`[STEP 3] New day detected (${lastDate} → ${today}). Resetting usage counter.`);
-          used = 0;
-          lastDate = today;
-        }
-
-        // 3. Enforce Quota
-        if (used >= quota) {
-          console.log(`[QUOTA EXCEEDED] Tenant ${tenantId} (${awsAccountId}) has used ${used}/${quota} refreshes for ${today}. Skipping processing.`);
+        if (usedSoFar >= quota) {
+          console.log(`[QUOTA EXCEEDED] Tenant ${tenantId} (${awsAccountId}) has used ${usedSoFar}/${quota} refreshes for ${today}. Skipping processing.`);
           continue; // Skip downstream processing, message will be deleted from SQS since we don't throw an error
         }
 
@@ -164,23 +223,28 @@ export const handler = async (event) => {
           if (e.message.includes("SQS will retry")) {
             throw e;
           }
+          // Another concurrent invocation for this tenant already started the
+          // crawler between our GetCrawler poll and our StartCrawler call — the
+          // state poll above isn't atomic with the start call. Treat this the
+          // same as "crawler is busy": retry via SQS rather than proceeding
+          // against a possibly-stale Glue table.
+          if (e.name === "CrawlerRunningException") {
+            console.log(`[CRAWLER] ${crawlerName} was started by a concurrent invocation. SQS will retry.`);
+            throw new Error(`Crawler ${crawlerName} already running (concurrent start). SQS will retry.`);
+          }
           console.warn("[CRAWLER WARN] Failed to get/start crawler, proceeding anyway...", e);
         }
 
-        // 4. Update Quota in DB and Proceed (moved AFTER crawler check so retries don't burn quota)
-        used += 1;
-        
-        await dynamo.send(new UpdateCommand({
-          TableName: TABLE,
-          Key: { tenantId },
-          UpdateExpression: "SET dailyRefreshesUsed = :u, lastRefreshDate = :d",
-          ExpressionAttributeValues: {
-            ":u": used,
-            ":d": lastDate
-          }
-        }));
+        // 4. Atomically check-and-consume quota (moved AFTER crawler check so
+        // crawler-triggered SQS retries don't burn quota on their own). See
+        // tryConsumeQuota() above for why this replaced the old GET-then-UPDATE.
+        const quotaOk = await tryConsumeQuota(tenantId, quota, today);
+        if (!quotaOk) {
+          console.log(`[QUOTA EXCEEDED] Tenant ${tenantId} (${awsAccountId}) hit its quota of ${quota} for ${today} (race with a concurrent delivery). Skipping.`);
+          continue;
+        }
 
-        console.log(`[QUOTA ALLOWED] Tenant ${tenantId} (${awsAccountId}) using refresh ${used}/${quota} for ${today}.`);
+        console.log(`[QUOTA ALLOWED] Tenant ${tenantId} (${awsAccountId}) consumed a refresh for ${today}.`);
 
         console.log(`[STEP 4] Looking up Glue tables in database: ${database}`);
         
@@ -206,14 +270,32 @@ export const handler = async (event) => {
         }
         
         const outputLocation = `s3://cloud-penny-athena-results-${env}/${tenantId}/`;
-        
-        // This query aggregates the raw parquet rows into daily service costs.
-        // It injects the tenantId as a custom tag so we can read it later in the EventBridge Lambda!
-        // We use --tenantId=${tenantId} as a SQL comment so it's passed through Athena's execution context.
+
+        // ── CRITICAL: scope the query to exactly the billing period this file
+        // belongs to. Previously this had no date/partition filter at all, so
+        // EVERY file drop re-aggregated the tenant's ENTIRE CUR history, and
+        // saveSnapshot would then attribute all of it to whichever month
+        // happened to sort first in the result set — silently corrupting every
+        // other month's snapshot. Filtering on the real `billing_period`
+        // partition column (confirmed live via `aws glue get-tables`) makes
+        // every query return rows for exactly one month, and also gives Athena
+        // real partition pruning (only that month's Parquet is scanned, not
+        // the whole tenant history — cheaper and faster as history grows).
+        // The tenant `$path` filter is kept as cheap defense-in-depth in case
+        // Glue's crawler ever groups multiple tenants into a shared table.
+        //
+        // tenantId/awsAccountId/billingPeriod are threaded through as SQL
+        // comment tags so saveSnapshot can read them back from the query
+        // execution metadata — all three are validated against strict
+        // allow-lists above (and escaped again here) before being interpolated,
+        // since Athena's API has no bind-parameter support for this call.
+        const safeTenantId = sqlEscape(tenantId);
+        const safeBillingPeriod = sqlEscape(billingPeriod);
         const queryString = `
           --tenantId=${tenantId}
           --awsAccountId=${awsAccountId}
-          SELECT 
+          --billingPeriod=${billingPeriod}
+          SELECT
             COALESCE(line_item_product_code, 'Unknown') as service,
             COALESCE(line_item_operation, 'None') as operation,
             COALESCE(product_region_code, '') as region,
@@ -222,7 +304,8 @@ export const handler = async (event) => {
             SUM(TRY_CAST(line_item_usage_amount AS DOUBLE)) as usage_amount,
             SUM(TRY_CAST(line_item_unblended_cost AS DOUBLE)) as total_cost
           FROM "${database}"."${tableName}"
-          WHERE "$path" LIKE '%/${tenantId}/%'
+          WHERE billing_period = '${safeBillingPeriod}'
+            AND "$path" LIKE '%/${safeTenantId}/%'
             AND line_item_usage_start_date IS NOT NULL
           GROUP BY 1, 2, 3, 4, 5
         `;

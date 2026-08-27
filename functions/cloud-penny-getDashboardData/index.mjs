@@ -1,18 +1,21 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, QueryCommand, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" }));
-const s3 = new S3Client({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
 
 const SNAPSHOTS_TABLE = process.env.SNAPSHOTS_TABLE || "cloudpenny-snapshots-dev";
-const env = process.env.ENVIRONMENT || "dev";
-const SNAPSHOTS_BUCKET = process.env.SNAPSHOTS_BUCKET || `cloudpenny-snapshot-data-${env}`;
+
+const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
 const extractTenantId = (event) =>
   event?.requestContext?.authorizer?.jwt?.claims?.sub ??
   event?.requestContext?.authorizer?.claims?.sub ??
   null;
+
+const currentMonth = () => {
+  const now = new Date();
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+};
 
 export const handler = async (event) => {
   try {
@@ -21,64 +24,32 @@ export const handler = async (event) => {
       return { statusCode: 401, body: JSON.stringify({ message: "Unauthorized" }) };
     }
 
-    // Determine current month in YYYY-MM format
-    const now = new Date();
-    const currentMonthStr = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+    const requestedMonth = event?.queryStringParameters?.month;
+    const month = requestedMonth && MONTH_RE.test(requestedMonth) ? requestedMonth : currentMonth();
 
-    console.log(`Fetching dashboard data for tenant ${tenantId}, month ${currentMonthStr}`);
+    console.log(`Fetching dashboard data for tenant ${tenantId}, month ${month}`);
 
-    // 1. Try to fetch the detailed JSON file from S3 first (new architecture)
-    try {
-      const s3Key = `${tenantId}/dashboard-MONTH#${currentMonthStr}.json`;
-      console.log(`[S3] Attempting to fetch detailed dashboard data from s3://${SNAPSHOTS_BUCKET}/${s3Key}`);
-      
-      const s3Res = await s3.send(new GetObjectCommand({
-        Bucket: SNAPSHOTS_BUCKET,
-        Key: s3Key
-      }));
-      
-      // Convert stream to string
-      const streamToString = (stream) =>
-        new Promise((resolve, reject) => {
-          const chunks = [];
-          stream.on("data", (chunk) => chunks.push(chunk));
-          stream.on("error", reject);
-          stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-        });
-
-      const bodyContents = await streamToString(s3Res.Body);
-      const parsedData = JSON.parse(bodyContents);
-      
-      console.log(`[S3] Successfully fetched and parsed detailed dashboard data.`);
-      return {
-        statusCode: 200,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(parsedData)
-      };
-    } catch (s3Err) {
-      if (s3Err.name === 'NoSuchKey' || s3Err.name === 'NotFound') {
-        console.log(`[S3] No detailed S3 JSON found for this month (fallback to DynamoDB).`);
-      } else {
-        console.warn(`[S3 WARN] Failed to fetch from S3:`, s3Err);
-      }
-    }
-
-    // 2. Fallback to querying all daily records for this month from DynamoDB (old architecture)
-    console.log(`[DynamoDB] Falling back to querying DAY# records for tenant ${tenantId}`);
+    // Primary path: Query the bounded DAY# items for this month directly.
+    // No Scan (single partition key + sort-key prefix), no S3 round trip —
+    // each DAY# item already carries a capped, pre-sorted `items` array
+    // (see saveSnapshot), so this is a single fast, cheap request.
     const queryRes = await dynamo.send(new QueryCommand({
       TableName: SNAPSHOTS_TABLE,
       KeyConditionExpression: "tenantId = :t AND begins_with(snapshotId, :prefix)",
       ExpressionAttributeValues: {
         ":t": tenantId,
-        ":prefix": `DAY#${currentMonthStr}`
+        ":prefix": `DAY#${month}`
       }
     }));
 
-    if (!queryRes.Items || queryRes.Items.length === 0) {
-      // Fallback to month record just in case, or return empty
+    const dayItems = queryRes.Items || [];
+
+    if (dayItems.length === 0) {
+      // Graceful degradation for a tenant with only a coarse MONTH# rollup
+      // so far (e.g. brand new, or before their first daily breakdown lands).
       const getRes = await dynamo.send(new GetCommand({
         TableName: SNAPSHOTS_TABLE,
-        Key: { tenantId, snapshotId: `MONTH#${currentMonthStr}` }
+        Key: { tenantId, snapshotId: `MONTH#${month}` }
       }));
 
       if (!getRes.Item) {
@@ -94,19 +65,16 @@ export const handler = async (event) => {
           }})
         };
       }
-      
-      const fallbackItems = [];
-      for (const [date, cost] of Object.entries(getRes.Item.dailySpend || {})) {
-        fallbackItems.push({
-          fullDate: date,
-          service: "Aggregate",
-          operation: "Unknown",
-          region: "",
-          lineItemType: "Usage",
-          usageAmount: 0,
-          cost
-        });
-      }
+
+      const fallbackItems = Object.entries(getRes.Item.dailyTotals || {}).map(([date, cost]) => ({
+        date,
+        service: "Aggregate",
+        operation: "Unknown",
+        region: "",
+        lineItemType: "Usage",
+        usageAmount: 0,
+        cost
+      }));
 
       return {
         statusCode: 200,
@@ -120,44 +88,27 @@ export const handler = async (event) => {
       };
     }
 
-    // Process all daily records into a rich dataset for the frontend
+    // Expand each day's bounded `items` array back into the flat row shape
+    // the frontend already renders. Field names/envelope are unchanged from
+    // before, so no frontend changes are required.
     let totalCost = 0;
-    const dailyItems = [];
     let updatedAt = "";
+    const dailyItems = [];
 
-    for (const item of queryRes.Items) {
+    for (const item of dayItems) {
       totalCost += item.totalCost || 0;
       if (item.updatedAt > updatedAt) updatedAt = item.updatedAt;
-      
-      // Extract the date from DAY#YYYY-MM-DD
-      const date = item.snapshotId.split('#')[1];
-      
-      if (item.items && item.items.length > 0) {
-        // Detailed items exist (new format)
-        for (const detail of item.items) {
-          dailyItems.push({
-            date,
-            service: detail.service,
-            operation: detail.operation,
-            region: detail.region || "",
-            lineItemType: detail.lineItemType || "Usage",
-            usageAmount: detail.usageAmount || 0,
-            cost: detail.cost
-          });
-        }
-      } else {
-        // Fallback for older daily records without detailed items
-        for (const [service, cost] of Object.entries(item.services || {})) {
-          dailyItems.push({
-            date,
-            service,
-            operation: "Unknown",
-            region: "",
-            lineItemType: "Usage",
-            usageAmount: 0,
-            cost: cost
-          });
-        }
+
+      for (const row of item.items || []) {
+        dailyItems.push({
+          date: item.date,
+          service: row.service,
+          operation: row.operation,
+          region: row.region || "",
+          lineItemType: row.lineItemType || "Usage",
+          usageAmount: row.usageAmount || 0,
+          cost: row.cost
+        });
       }
     }
 

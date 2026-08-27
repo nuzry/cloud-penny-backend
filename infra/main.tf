@@ -220,10 +220,25 @@ resource "aws_lambda_permission" "api_gateway" {
 
 # SQS QUEUE for CUR Updates
 
+# Dead-letter queue: without this, a message that keeps failing (e.g. a
+# malformed S3 key, a persistently broken Athena query) retries silently for
+# up to MessageRetentionPeriod (4 days) and then is dropped with no trace.
+# Confirmed live (via `aws sqs get-queue-attributes`) that the queue had no
+# RedrivePolicy at all before this change.
+resource "aws_sqs_queue" "cur_updates_dlq" {
+  name                      = "cloudpenny-cur-updates-dlq-${var.environment}"
+  message_retention_seconds = 1209600 # 14 days — enough time to notice and reprocess
+}
+
 resource "aws_sqs_queue" "cur_updates" {
   name = "cloudpenny-cur-updates-${var.environment}"
   # Optional: Configure visibility timeout, typically 6x Lambda timeout
   visibility_timeout_seconds = 180
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.cur_updates_dlq.arn
+    maxReceiveCount     = 5
+  })
 }
 
 # Allow S3 to send messages to the SQS queue
@@ -285,7 +300,12 @@ resource "aws_iam_role_policy" "lambda_sqs_access" {
           "sqs:DeleteMessage",
           "sqs:GetQueueAttributes"
         ]
-        Resource = aws_sqs_queue.cur_updates.arn
+        # Includes the DLQ so a failed message's payload can be inspected /
+        # manually redriven for reprocessing, not just the main queue.
+        Resource = [
+          aws_sqs_queue.cur_updates.arn,
+          aws_sqs_queue.cur_updates_dlq.arn
+        ]
       }
     ]
   })
