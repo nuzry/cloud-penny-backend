@@ -25,17 +25,19 @@ cloud-penny/
 │
 ├── functions/                          ← Your Lambda function code lives here
 │   ├── cloud-penny-getClientMe/
-│   │   └── index.mjs
 │   ├── cloud-penny-deleteAccount/
-│   │   └── index.mjs
 │   ├── cloud-penny-getAwsConnection/
-│   │   └── index.mjs
-│   ├── cloud-penny-saveArn/
-│   │   └── index.mjs
-│   ├── cloud-penny-verifyArnRole/
-│   │   └── index.mjs
-│   └── cloud-penny-postConfirmationFunction/
-│       └── index.mjs
+│   ├── cloud-penny-saveAwsAccount/
+│   ├── cloud-penny-verifyAwsAccount/
+│   ├── cloud-penny-postConfirmationFunction/
+│   ├── cloud-penny-processCurUpdate/       ← SQS worker, triggered by S3 CUR delivery
+│   ├── cloud-penny-saveSnapshot/           ← EventBridge, triggered by Athena query success
+│   ├── cloud-penny-getDashboardData/
+│   ├── cloud-penny-getExportFiles/
+│   ├── cloud-penny-processAnomalyAlert/    ← SNS, triggered by AWS Cost Anomaly Detection
+│   ├── cloud-penny-getAlerts/
+│   └── cloud-penny-chat-handler/           ← Penny AI copilot (Groq)
+│       (each folder has an index.mjs — ESM, no bundler, deployed as-is)
 │
 ├── infra/
 │   └── functions.json                  ← THE config file — controls everything
@@ -246,10 +248,17 @@ To add a new function, add a new object to the array (or use `node scripts/creat
 |---|---|
 | `cloud-penny-getClientMe` | `GET /api/v1/clients/me` |
 | `cloud-penny-deleteAccount` | `PUT /api/v1/clients/me`, `DELETE /api/v1/clients/me` |
-| `cloud-penny-getAwsConnection` | `GET /api/v1/clients/aws-connection` |
-| `cloud-penny-saveArn` | `POST /api/v1/clients/aws-connection` |
-| `cloud-penny-verifyArnRole` | `POST /api/v1/clients/verify` |
+| `cloud-penny-getAwsConnection` | `GET /api/v1/aws-connection` |
+| `cloud-penny-saveAwsAccount` | `POST /api/v1/aws-connection` |
+| `cloud-penny-verifyAwsAccount` | `POST /api/v1/aws-connection/verify` |
 | `cloud-penny-postConfirmationFunction` | *(Cognito trigger — no API route)* |
+| `cloud-penny-processCurUpdate` | *(SQS trigger — no API route)* |
+| `cloud-penny-saveSnapshot` | *(EventBridge trigger — no API route)* |
+| `cloud-penny-getDashboardData` | `GET /api/v1/dashboard` |
+| `cloud-penny-getExportFiles` | `GET /api/v1/exports` |
+| `cloud-penny-processAnomalyAlert` | *(SNS trigger — no API route)* |
+| `cloud-penny-getAlerts` | `GET /api/v1/alerts` |
+| `cloud-penny-chat-handler` | `POST /api/v1/chat` |
 
 ---
 

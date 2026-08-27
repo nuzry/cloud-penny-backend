@@ -43,13 +43,9 @@ export const handler = async (event) => {
 
   // Check if we have received any files for this tenant
   let filesReceived = false;
-  
-  if (awsAccountId === '999988887777') {
-    // Bypass for demo/test account
-    filesReceived = true;
-  } else {
-    try {
-      if (BUCKET) {
+
+  try {
+    if (BUCKET) {
       const shortId = tenantId.substring(0, 8);
       const listRes = await s3.send(new ListObjectsV2Command({
         Bucket: BUCKET,
@@ -58,10 +54,9 @@ export const handler = async (event) => {
       }));
       filesReceived = listRes.KeyCount > 0;
     }
-    } catch (err) {
-      console.error("S3_LIST_ERROR", err);
-      // Ignore error, just means we can't verify yet
-    }
+  } catch (err) {
+    console.error("S3_LIST_ERROR", err);
+    // Ignore error, just means we can't verify yet
   }
 
   if (filesReceived) {

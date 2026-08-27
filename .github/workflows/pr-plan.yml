@@ -125,7 +125,7 @@ jobs:
               `\`\`\``,
               `</details>`,
               ``,
-              `> 🔁 Pushed by @${{ github.actor }} · commit \`${{ github.sha }}}\``,
+              `> 🔁 Pushed by @${{ github.actor }} · commit \`${{ github.sha }}\``,
               `> ⚠️ This plan is for **dev** only. Production deploys require a manual workflow dispatch.`,
             ].join('\n');
 

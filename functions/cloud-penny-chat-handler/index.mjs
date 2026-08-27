@@ -1,19 +1,21 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, GetCommand } from "@aws-sdk/lib-dynamodb";
-import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
+import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 import { getSystemPrompt } from "./prompts.mjs";
 import { toolDefinitions, handleToolUse } from "./tools.mjs";
 
 const ddbClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(ddbClient);
-const bedrockClient = new BedrockRuntimeClient({});
+const secretsClient = new SecretsManagerClient({});
 
 const TENANTS_TABLE = process.env.TENANTS_TABLE;
-const MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"; // Using Global Cross-Region for Claude Haiku 4.5
+const GROQ_SECRET_NAME = process.env.GROQ_SECRET_NAME || "cloudpenny-groq-api-key-dev";
+const MODEL_ID = process.env.GROQ_MODEL_ID || "openai/gpt-oss-120b";
+const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 
 // Hard ceiling on tool-use round trips per user message. Prevents a single
-// request from spiraling into dozens of Bedrock calls (and burning the
-// daily token quota) if the model can't get a satisfying tool result.
+// request from spiraling into dozens of Groq calls (and burning cost/latency)
+// if the model can't get a satisfying tool result.
 const MAX_TOOL_ITERATIONS = 5;
 
 const corsHeaders = {
@@ -26,6 +28,16 @@ const extractTenantId = (event) =>
   event?.requestContext?.authorizer?.jwt?.claims?.sub ??
   event?.requestContext?.authorizer?.claims?.sub ??
   null;
+
+// Cached in module scope so a warm Lambda container only calls Secrets
+// Manager once, not on every invocation.
+let cachedApiKey = null;
+async function getGroqApiKey() {
+  if (cachedApiKey) return cachedApiKey;
+  const res = await secretsClient.send(new GetSecretValueCommand({ SecretId: GROQ_SECRET_NAME }));
+  cachedApiKey = res.SecretString;
+  return cachedApiKey;
+}
 
 export const handler = async (event) => {
   console.log("INCOMING EVENT:", JSON.stringify(event));
@@ -58,34 +70,34 @@ export const handler = async (event) => {
     }
 
     const systemPrompt = getSystemPrompt(tenant);
+    const apiKey = await getGroqApiKey();
 
-    // 2. Format History for Converse API
-    // Converse API expects: { role: "user"|"assistant", content: [{ text: "..." }] }
-    const messages = history.map(msg => ({
-      role: msg.sender === 'user' ? 'user' : 'assistant',
-      content: [{ text: msg.text }]
-    }));
+    // 2. Format History for Groq's OpenAI-compatible chat-completions API:
+    // { role: "system"|"user"|"assistant"|"tool", content: "..." } — a flat
+    // string per message, unlike Bedrock Converse's { content: [{text}] }.
+    const messages = [
+      { role: "system", content: systemPrompt },
+      ...history.map(msg => ({
+        role: msg.sender === 'user' ? 'user' : 'assistant',
+        content: msg.text
+      })),
+      { role: "user", content: message }
+    ];
 
-    // Add current user message
-    messages.push({
-      role: 'user',
-      content: [{ text: message }]
-    });
-
-    // 3. Bedrock Converse Loop
+    // 3. Groq tool-use loop
     let finalResponse = "";
-    let stopReason = "tool_use";
     let iterations = 0;
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
+    let totalPromptTokens = 0;
+    let totalCompletionTokens = 0;
+    let done = false;
 
-    while (stopReason === "tool_use") {
+    while (!done) {
       iterations++;
 
       if (iterations > MAX_TOOL_ITERATIONS) {
         console.warn(
           `[TOOL LOOP ABORTED] tenant=${tenantId} exceeded ${MAX_TOOL_ITERATIONS} tool-use iterations. ` +
-          `totalInputTokens=${totalInputTokens} totalOutputTokens=${totalOutputTokens}`
+          `totalPromptTokens=${totalPromptTokens} totalCompletionTokens=${totalCompletionTokens}`
         );
         finalResponse =
           "I wasn't able to find an answer to that using the available data. " +
@@ -93,87 +105,92 @@ export const handler = async (event) => {
         break;
       }
 
-      const command = new ConverseCommand({
-        modelId: MODEL_ID,
-        messages: messages,
-        system: [{ text: systemPrompt }],
-        toolConfig: {
-          tools: toolDefinitions
+      const groqRes = await fetch(GROQ_API_URL, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
         },
-        inferenceConfig: { temperature: 0.1, maxTokens: 2000 }
+        body: JSON.stringify({
+          model: MODEL_ID,
+          messages,
+          tools: toolDefinitions,
+          tool_choice: "auto",
+          temperature: 0.1,
+          max_tokens: 2000
+        })
       });
 
-      const response = await bedrockClient.send(command);
-
-      if (response.usage) {
-        totalInputTokens += response.usage.inputTokens || 0;
-        totalOutputTokens += response.usage.outputTokens || 0;
+      if (!groqRes.ok) {
+        const errText = await groqRes.text();
+        console.error(`[GROQ ERROR] tenant=${tenantId} status=${groqRes.status}:`, errText);
+        throw new Error(`Groq API error (${groqRes.status})`);
       }
 
+      const data = await groqRes.json();
+
+      if (data.usage) {
+        totalPromptTokens += data.usage.prompt_tokens || 0;
+        totalCompletionTokens += data.usage.completion_tokens || 0;
+      }
+
+      const choice = data.choices?.[0];
+      const assistantMessage = choice?.message;
+
       console.log(
-        `[CONVERSE] tenant=${tenantId} iteration=${iterations} stopReason=${response.stopReason} ` +
-        `usage=${JSON.stringify(response.usage)}`
+        `[GROQ] tenant=${tenantId} iteration=${iterations} finishReason=${choice?.finish_reason} ` +
+        `usage=${JSON.stringify(data.usage)}`
       );
 
-      const outputMessage = response.output.message;
-      messages.push(outputMessage); // Append assistant's response (text or tool_use)
+      if (!assistantMessage) {
+        throw new Error("Groq returned no message in response.");
+      }
 
-      stopReason = response.stopReason;
+      messages.push(assistantMessage);
 
-      if (stopReason === "tool_use") {
-        // Find all tool uses in the assistant's output
-        const toolUses = outputMessage.content.filter(c => c.toolUse);
-        const toolResults = [];
+      const toolCalls = assistantMessage.tool_calls || [];
 
-        for (const block of toolUses) {
-          const toolUse = block.toolUse;
-
+      if (toolCalls.length > 0) {
+        for (const toolCall of toolCalls) {
+          let toolInput = {};
           try {
-            const result = await handleToolUse(docClient, tenantId, toolUse.name, toolUse.input);
+            toolInput = toolCall.function.arguments ? JSON.parse(toolCall.function.arguments) : {};
+          } catch (parseErr) {
+            console.error(`[TOOL ARGS PARSE ERROR] tenant=${tenantId} tool=${toolCall.function.name}:`, parseErr);
+          }
 
+          let toolResultContent;
+          try {
             // handleToolUse never throws (it catches internally), but a tool
             // can still report a logical error (e.g. "no data found"). We
-            // pass that through as a normal successful toolResult so the
-            // model sees it and can decide what to do next - the system
-            // prompt tells it not to keep retrying in that case.
-            toolResults.push({
-              toolResult: {
-                toolUseId: toolUse.toolUseId,
-                content: [{ json: result }],
-                status: "success"
-              }
-            });
+            // pass that through as a normal tool result so the model sees it
+            // and can decide what to do next - the system prompt tells it
+            // not to keep retrying in that case.
+            const result = await handleToolUse(docClient, tenantId, toolCall.function.name, toolInput);
+            toolResultContent = JSON.stringify(result);
           } catch (toolErr) {
             // Defensive: only reached if something outside handleToolUse's
             // own try/catch throws (e.g. a DynamoDB client-level failure).
-            console.error(`[TOOL ERROR] tenant=${tenantId} tool=${toolUse.name}:`, toolErr);
-            toolResults.push({
-              toolResult: {
-                toolUseId: toolUse.toolUseId,
-                content: [{ json: { error: toolErr.message || "Tool execution failed." } }],
-                status: "error"
-              }
-            });
+            console.error(`[TOOL ERROR] tenant=${tenantId} tool=${toolCall.function.name}:`, toolErr);
+            toolResultContent = JSON.stringify({ error: toolErr.message || "Tool execution failed." });
           }
-        }
 
-        // Append the tool results as a 'user' message so the model can read them
-        messages.push({
-          role: "user",
-          content: toolResults
-        });
-      } else {
-        // Model is done, extract the text
-        const textContent = outputMessage.content.find(c => c.text);
-        if (textContent) {
-          finalResponse = textContent.text;
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: toolResultContent
+          });
         }
+        // Loop again so the model can read the tool results.
+      } else {
+        finalResponse = assistantMessage.content || "";
+        done = true;
       }
     }
 
     console.log(
       `[CHAT COMPLETE] tenant=${tenantId} iterations=${iterations} ` +
-      `totalInputTokens=${totalInputTokens} totalOutputTokens=${totalOutputTokens}`
+      `totalPromptTokens=${totalPromptTokens} totalCompletionTokens=${totalCompletionTokens}`
     );
 
     return {

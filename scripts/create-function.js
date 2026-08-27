@@ -14,7 +14,7 @@
  *   node scripts/create-function.js payments-create
  *
  * What it does:
- *   1. Creates functions/<name>/index.js from a template
+ *   1. Creates functions/<name>/index.mjs from a template
  *   2. Appends a new entry to infra/functions.json
  *   3. Prints next steps
  */
@@ -50,54 +50,52 @@ if (fs.existsSync(functionDir)) {
 }
 
 // ── Create folder + handler ──────────────────────────────────
+// ESM (.mjs, `export const handler`) — every existing function in this
+// project is written this way (root package.json has "type": "module"),
+// so a scaffold emitting CommonJS would be inconsistent with the real
+// convention and Lambda would resolve it differently at runtime.
 fs.mkdirSync(functionDir, { recursive: true });
 
-const handlerContent = `'use strict';
+const handlerContent = `// ${fnName} — Lambda handler
+// Created: ${new Date().toISOString().split('T')[0]}
+//
+// TODO: Add routes to infra/functions.json, then implement logic below.
 
-/**
- * ${fnName} — Lambda handler
- * Created: ${new Date().toISOString().split('T')[0]}
- *
- * TODO: Add routes to infra/functions.json, then implement logic below.
- */
-exports.handler = async (event, context) => {
-  const method = event.requestContext?.http?.method ?? event.httpMethod ?? 'UNKNOWN';
+const response = (statusCode, body) => ({
+  statusCode,
+  headers: {
+    "Content-Type":                "application/json",
+    "Access-Control-Allow-Origin": "*"
+  },
+  body: JSON.stringify(body)
+});
 
-  console.log(JSON.stringify({
-    level:     'INFO',
-    requestId: context.awsRequestId,
-    method,
-    path:      event.rawPath,
-    stage:     process.env.ENVIRONMENT,
-  }));
+const extractTenantId = (event) =>
+  event?.requestContext?.authorizer?.jwt?.claims?.sub ??
+  event?.requestContext?.authorizer?.claims?.sub ??
+  null;
+
+export const handler = async (event) => {
+  console.log("EVENT_PRINT:", JSON.stringify(event, null, 2));
+
+  const tenantId = extractTenantId(event);
+  if (!tenantId) {
+    console.warn("UNAUTHORIZED: No sub claim found in token");
+    return response(401, { success: false, error: "Unauthorized — invalid or missing token" });
+  }
 
   try {
     // TODO: implement your business logic here
 
-    return {
-      statusCode: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
-      body: JSON.stringify({
-        message:  'Success',
-        function: '${fnName}',
-        timestamp: new Date().toISOString(),
-      }),
-    };
+    return response(200, { success: true, data: {} });
   } catch (err) {
-    console.error(JSON.stringify({ level: 'ERROR', error: err.message, stack: err.stack }));
-    return {
-      statusCode: 500,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: 'Internal server error' }),
-    };
+    console.error("${fnName.toUpperCase().replace(/-/g, '_')}_ERROR:", err.message);
+    return response(500, { success: false, error: "Internal server error" });
   }
 };
 `;
 
-fs.writeFileSync(path.join(functionDir, 'index.js'), handlerContent);
+fs.writeFileSync(path.join(functionDir, 'index.mjs'), handlerContent);
 
 // ── Append entry to functions.json ───────────────────────────
 let functions = [];
@@ -125,7 +123,7 @@ fs.writeFileSync(CONFIG_PATH, JSON.stringify(functions, null, 2) + '\n');
 console.log(`
 ✅  Created function: ${fnName}
 
-   📁  functions/${fnName}/index.js   ← implement your logic here
+   📁  functions/${fnName}/index.mjs   ← implement your logic here
    📋  infra/functions.json           ← route definitions added (empty for now)
 
 👉  Next steps:
@@ -135,7 +133,7 @@ console.log(`
            "path":   "/api/v1/your-path"
          }
 
-   2. Implement your logic in functions/${fnName}/index.js
+   2. Implement your logic in functions/${fnName}/index.mjs
 
    3. Zip + deploy:
          npm run zip

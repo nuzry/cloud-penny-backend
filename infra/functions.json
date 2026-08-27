@@ -38,7 +38,10 @@
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 10,
-    "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
+    "environment": {
+      "TENANTS_TABLE": "cloudpenny-tenants",
+      "CENTRAL_CURS_BUCKET": "cloudpenny-central-curs-dev"
+    },
     "routes": [
       { "method": "GET", "path": "/api/v1/aws-connection" }
     ]
@@ -105,10 +108,8 @@
     "runtime": "nodejs20.x",
     "memory": 256,
     "timeout": 30,
-    "environment": { 
-      "SNAPSHOTS_TABLE": "cloudpenny-snapshots-dev",
-      "ATHENA_RESULTS_BUCKET": "cloud-penny-athena-results-dev",
-      "SNAPSHOTS_DATA_BUCKET": "cloudpenny-snapshot-data-dev"
+    "environment": {
+      "SNAPSHOTS_TABLE": "cloudpenny-snapshots-dev"
     },
     "routes": []
   },
@@ -120,8 +121,7 @@
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 30,
-    "environment": { 
-      "TENANTS_TABLE": "cloudpenny-tenants",
+    "environment": {
       "SNAPSHOTS_TABLE": "cloudpenny-snapshots-dev"
     },
     "routes": [
@@ -176,7 +176,7 @@
   },
   {
     "name": "cloud-penny-chat-handler",
-    "description": "Handler for Penny AI chat endpoint using Bedrock",
+    "description": "Handler for Penny AI chat endpoint using Groq",
     "aws_name_override": "cloud-penny-chat-handler",
     "handler": "index.handler",
     "runtime": "nodejs20.x",
@@ -184,7 +184,8 @@
     "timeout": 30,
     "environment": {
       "TENANTS_TABLE": "cloudpenny-tenants",
-      "ATHENA_RESULTS_BUCKET": "cloud-penny-athena-results-dev"
+      "GROQ_SECRET_NAME": "cloudpenny-groq-api-key-dev",
+      "GROQ_MODEL_ID": "openai/gpt-oss-120b"
     },
     "routes": [
       { "method": "POST", "path": "/api/v1/chat" }

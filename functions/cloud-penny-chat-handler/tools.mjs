@@ -4,102 +4,98 @@ const SNAPSHOTS_TABLE = process.env.SNAPSHOTS_TABLE || "cloudpenny-snapshots-dev
 
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const MAX_DAILY_RANGE_DAYS = 31; // keeps the range query and Bedrock payload small
+const MAX_DAILY_RANGE_DAYS = 31; // keeps the range query and the model payload small
 
 // --- TOOL SCHEMAS ---
+// OpenAI-compatible function-calling shape (used by Groq's chat-completions
+// API), not Bedrock Converse's { toolSpec: { inputSchema: { json } } } shape.
 
 export const toolDefinitions = [
   {
-    toolSpec: {
+    type: "function",
+    function: {
       name: "getMonthlySpend",
       description: "Returns the total AWS expenditure for a specific month.",
-      inputSchema: {
-        json: {
-          type: "object",
-          properties: {
-            month: { type: "string", description: "The month to query in YYYY-MM format, e.g., '2026-08'" }
-          },
-          required: ["month"]
-        }
+      parameters: {
+        type: "object",
+        properties: {
+          month: { type: "string", description: "The month to query in YYYY-MM format, e.g., '2026-08'" }
+        },
+        required: ["month"]
       }
     }
   },
   {
-    toolSpec: {
+    type: "function",
+    function: {
       name: "getSpendByService",
       description: "Returns the breakdown of AWS costs by individual services for a specific month.",
-      inputSchema: {
-        json: {
-          type: "object",
-          properties: {
-            month: { type: "string", description: "The month to query in YYYY-MM format, e.g., '2026-08'" }
-          },
-          required: ["month"]
-        }
+      parameters: {
+        type: "object",
+        properties: {
+          month: { type: "string", description: "The month to query in YYYY-MM format, e.g., '2026-08'" }
+        },
+        required: ["month"]
       }
     }
   },
   {
-    toolSpec: {
+    type: "function",
+    function: {
       name: "compareSpendPeriods",
       description: "Compares the total AWS spend between two specific months and returns the absolute and percentage change.",
-      inputSchema: {
-        json: {
-          type: "object",
-          properties: {
-            currentMonth: { type: "string", description: "The more recent month in YYYY-MM format, e.g., '2026-08'" },
-            previousMonth: { type: "string", description: "The older month in YYYY-MM format, e.g., '2026-07'" }
-          },
-          required: ["currentMonth", "previousMonth"]
-        }
+      parameters: {
+        type: "object",
+        properties: {
+          currentMonth: { type: "string", description: "The more recent month in YYYY-MM format, e.g., '2026-08'" },
+          previousMonth: { type: "string", description: "The older month in YYYY-MM format, e.g., '2026-07'" }
+        },
+        required: ["currentMonth", "previousMonth"]
       }
     }
   },
   {
-    toolSpec: {
+    type: "function",
+    function: {
       name: "getCostTrend",
       description: "Returns an array of total monthly spends over a period of time to show a trend. Do not use this if they only ask for two specific months.",
-      inputSchema: {
-        json: {
-          type: "object",
-          properties: {
-            startMonth: { type: "string", description: "The starting month in YYYY-MM format." },
-            endMonth: { type: "string", description: "The ending month in YYYY-MM format." }
-          },
-          required: ["startMonth", "endMonth"]
-        }
+      parameters: {
+        type: "object",
+        properties: {
+          startMonth: { type: "string", description: "The starting month in YYYY-MM format." },
+          endMonth: { type: "string", description: "The ending month in YYYY-MM format." }
+        },
+        required: ["startMonth", "endMonth"]
       }
     }
   },
   {
-    toolSpec: {
+    type: "function",
+    function: {
       name: "getTopCostDrivers",
       description: "Compares the service-level costs between two months and identifies which services increased the most.",
-      inputSchema: {
-        json: {
-          type: "object",
-          properties: {
-            currentMonth: { type: "string", description: "The more recent month in YYYY-MM format." },
-            previousMonth: { type: "string", description: "The older month in YYYY-MM format." }
-          },
-          required: ["currentMonth", "previousMonth"]
-        }
+      parameters: {
+        type: "object",
+        properties: {
+          currentMonth: { type: "string", description: "The more recent month in YYYY-MM format." },
+          previousMonth: { type: "string", description: "The older month in YYYY-MM format." }
+        },
+        required: ["currentMonth", "previousMonth"]
       }
     }
   },
   {
-    toolSpec: {
+    type: "function",
+    function: {
       name: "getDailySpend",
       description: "Returns day-by-day AWS spend totals for a specific date range (max 31 days). Use this for questions about a specific day (e.g. yesterday) or a short recent window, rather than a whole month.",
-      inputSchema: {
-        json: {
-          type: "object",
-          properties: {
-            startDate: { type: "string", description: "Start date in YYYY-MM-DD format, inclusive." },
-            endDate: { type: "string", description: "End date in YYYY-MM-DD format, inclusive." }
-          },
-          required: ["startDate", "endDate"]
-        }
+      parameters: {
+        type: "object",
+        properties: {
+          startDate: { type: "string", description: "Start date in YYYY-MM-DD format, inclusive." },
+          endDate: { type: "string", description: "End date in YYYY-MM-DD format, inclusive." }
+        },
+        required: ["startDate", "endDate"]
       }
     }
   }
@@ -342,7 +338,7 @@ async function getDailySpend(docClient, tenantId, startDate, endDate) {
   }
 
   // Keep the payload lean: only attach a per-day service breakdown for short
-  // ranges, so a longer trend request doesn't dump a wall of data on Bedrock
+  // ranges, so a longer trend request doesn't dump a wall of data on the model
   // (see AI-part/cloudpenny_ai_exact_implementation.md — aggregate/filter
   // before sending anything to the model, never the raw dataset).
   const includeServices = rangeDays <= 7;

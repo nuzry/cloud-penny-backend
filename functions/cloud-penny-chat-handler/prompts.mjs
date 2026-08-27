@@ -1,5 +1,10 @@
 export const getSystemPrompt = (tenantContext) => {
-  const awsConnected = !!tenantContext.awsConnected;
+  // The tenant record has no `awsConnected` boolean — connection state lives
+  // in the `connectionStatus` string ('VERIFIED' once CUR data is flowing).
+  // Reading a field that never existed made this always false, which meant
+  // the <no_data_notice> below fired for every tenant regardless of their
+  // real status and the model never called a single tool for anyone.
+  const awsConnected = tenantContext.connectionStatus === 'VERIFIED';
 
   return `You are Penny AI, a highly specialized Cloud Cost Optimization assistant.
 Your ONLY purpose is to answer questions related to the user's AWS billing, cost optimization, and account details.
@@ -29,7 +34,7 @@ This tenant's AWS account is NOT currently connected (AWS Connection Status: Not
 </rules>
 
 <tenant_context>
-Company Name: ${tenantContext.companyName || "Unknown"}
+Account Email: ${tenantContext.email || "Unknown"}
 AWS Connection Status: ${awsConnected ? "Connected" : "Not Connected"}
 </tenant_context>
 

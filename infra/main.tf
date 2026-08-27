@@ -559,22 +559,28 @@ resource "aws_iam_role_policy" "lambda_ses_access" {
 }
 
 # -----------------------------------------------------------
-# LAMBDA BEDROCK PERMISSIONS
+# LAMBDA GROQ API KEY ACCESS (Secrets Manager)
 # -----------------------------------------------------------
+# The Groq API key is created out-of-band (AWS CLI / console), the same way
+# the Cognito user pool and API Gateway are looked up as data sources rather
+# than managed here — so the raw key value never passes through Terraform
+# state.
 
-resource "aws_iam_role_policy" "lambda_bedrock_access" {
-  name = "${var.project_name}-lambda-bedrock-access-${var.environment}"
+data "aws_secretsmanager_secret" "groq_api_key" {
+  name = "cloudpenny-groq-api-key-${var.environment}"
+}
+
+resource "aws_iam_role_policy" "lambda_groq_secret_access" {
+  name = "${var.project_name}-lambda-groq-secret-access-${var.environment}"
   role = data.aws_iam_role.lambda_role.name
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = [
-          "bedrock:InvokeModel"
-        ]
-        Resource = "*"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = data.aws_secretsmanager_secret.groq_api_key.arn
       }
     ]
   })
