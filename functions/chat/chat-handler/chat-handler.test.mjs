@@ -108,4 +108,57 @@ describe('chat-handler', () => {
     const res = await handler(authedEvent({ message: 'hi' }));
     expect(res.statusCode).toBe(500);
   });
+
+  // Regression tests for the rate-limit incident: Groq's TPM limit is shared
+  // across the whole org, so a burst of requests could trip it. A transient
+  // 429 should be retried rather than failing the request outright.
+  it('retries once on a transient 429 then succeeds', async () => {
+    vi.useFakeTimers();
+    ddbMock.on(GetCommand).resolves({ Item: { email: 'a@b.com', connectionStatus: 'VERIFIED' } });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 429, text: async () => 'rate limited' })
+      .mockResolvedValueOnce(groqResponse({ role: 'assistant', content: 'ok now' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const resultPromise = handler(authedEvent({ message: 'hi' }));
+    await vi.advanceTimersByTimeAsync(1000);
+    const res = await resultPromise;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(res.body).data.reply).toBe('ok now');
+    vi.useRealTimers();
+  });
+
+  it('returns a friendly rate-limit message when Groq keeps returning 429', async () => {
+    vi.useFakeTimers();
+    ddbMock.on(GetCommand).resolves({ Item: { email: 'a@b.com', connectionStatus: 'VERIFIED' } });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 429, text: async () => 'rate limited' });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const resultPromise = handler(authedEvent({ message: 'hi' }));
+    await vi.advanceTimersByTimeAsync(1000 + 2000 + 4000 + 1000);
+    const res = await resultPromise;
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).data.reply).toMatch(/rate limit/i);
+    vi.useRealTimers();
+  });
+
+  // Regression test: history used to be sent in full on every request with
+  // no cap, so a long-running conversation multiplied token usage on every
+  // call and made the TPM limit far easier to trip.
+  it('trims history to the most recent messages before calling Groq', async () => {
+    ddbMock.on(GetCommand).resolves({ Item: { email: 'a@b.com', connectionStatus: 'VERIFIED' } });
+    const fetchMock = vi.fn().mockResolvedValue(groqResponse({ role: 'assistant', content: 'ok' }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const longHistory = Array.from({ length: 30 }, (_, i) => ({ sender: 'user', text: `msg-${i}` }));
+    await handler(authedEvent({ message: 'latest', history: longHistory }));
+
+    const sentBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const historyMessages = sentBody.messages.filter(m => m.role !== 'system' && m.content !== 'latest');
+    expect(historyMessages.length).toBeLessThanOrEqual(10);
+    expect(historyMessages[historyMessages.length - 1].content).toBe('msg-29');
+    expect(historyMessages[0].content).toBe('msg-20');
+  });
 });
