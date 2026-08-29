@@ -1,37 +1,51 @@
 [
   {
     "name": "cloud-penny-getClientMe",
+    "path": "auth/getClientMe",
     "description": "Get client profile",
     "aws_name_override": "cloud-penny-getClientMe",
     "handler": "index.handler",
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 10,
-    "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
+    "environment": {
+      "TENANTS_TABLE": "cloudpenny-tenants"
+    },
     "routes": [
-      { "method": "GET", "path": "/api/v1/clients/me" }
+      {
+        "method": "GET",
+        "path": "/api/v1/clients/me"
+      }
     ]
   },
   {
     "name": "cloud-penny-deleteAccount",
+    "path": "auth/deleteAccount",
     "description": "Update / delete client account",
     "aws_name_override": "cloud-penny-deleteAccount",
     "handler": "index.handler",
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 10,
-    "environment": { 
+    "environment": {
       "TENANTS_TABLE": "cloudpenny-tenants",
       "COGNITO_USER_POOL_ID": "ap-southeast-1_yMWin06rf",
       "CENTRAL_CURS_BUCKET": "cloudpenny-central-curs-dev"
     },
     "routes": [
-      { "method": "PUT",    "path": "/api/v1/clients/me" },
-      { "method": "DELETE", "path": "/api/v1/clients/me" }
+      {
+        "method": "PUT",
+        "path": "/api/v1/clients/me"
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/v1/clients/me"
+      }
     ]
   },
   {
     "name": "cloud-penny-getAwsConnection",
+    "path": "aws-connection/getAwsConnection",
     "description": "Get AWS connection / external ID",
     "aws_name_override": "cloud-penny-getAwsConnection",
     "handler": "index.handler",
@@ -43,65 +57,83 @@
       "CENTRAL_CURS_BUCKET": "cloudpenny-central-curs-dev"
     },
     "routes": [
-      { "method": "GET", "path": "/api/v1/aws-connection" }
+      {
+        "method": "GET",
+        "path": "/api/v1/aws-connection"
+      }
     ]
   },
   {
     "name": "cloud-penny-saveAwsAccount",
+    "path": "aws-connection/saveAwsAccount",
     "description": "Save AWS Account ID and whitelist S3 bucket policy",
     "aws_name_override": "cloud-penny-saveAwsAccount",
     "handler": "index.handler",
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 15,
-    "environment": { 
+    "environment": {
       "TENANTS_TABLE": "cloudpenny-tenants",
-      "CENTRAL_CURS_BUCKET": "cloudpenny-central-curs-dev" 
+      "CENTRAL_CURS_BUCKET": "cloudpenny-central-curs-dev"
     },
     "routes": [
-      { "method": "POST", "path": "/api/v1/aws-connection" }
+      {
+        "method": "POST",
+        "path": "/api/v1/aws-connection"
+      }
     ]
   },
   {
     "name": "cloud-penny-verifyAwsAccount",
+    "path": "aws-connection/verifyAwsAccount",
     "description": "Verify CUR delivery to central S3 bucket",
     "aws_name_override": "cloud-penny-verifyAwsAccount",
     "handler": "index.handler",
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 15,
-    "environment": { 
+    "environment": {
       "TENANTS_TABLE": "cloudpenny-tenants",
-      "CENTRAL_CURS_BUCKET": "cloudpenny-central-curs-dev" 
+      "CENTRAL_CURS_BUCKET": "cloudpenny-central-curs-dev"
     },
     "routes": [
-      { "method": "POST", "path": "/api/v1/aws-connection/verify" }
+      {
+        "method": "POST",
+        "path": "/api/v1/aws-connection/verify"
+      }
     ]
   },
   {
     "name": "cloud-penny-postConfirmationFunction",
+    "path": "auth/postConfirmationFunction",
     "description": "Cognito post-confirmation trigger — no API route",
     "aws_name_override": "cloud-penny-postConfirmationFunction",
     "handler": "index.handler",
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 10,
-    "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
+    "environment": {
+      "TENANTS_TABLE": "cloudpenny-tenants"
+    },
     "routes": []
   },
   {
     "name": "cloud-penny-processCurUpdate",
+    "path": "billing/processCurUpdate",
     "description": "SQS Worker to process CUR updates from S3 events and enforce quota",
     "aws_name_override": "cloud-penny-processCurUpdate",
     "handler": "index.handler",
     "runtime": "nodejs20.x",
     "memory": 128,
     "timeout": 30,
-    "environment": { "TENANTS_TABLE": "cloudpenny-tenants" },
+    "environment": {
+      "TENANTS_TABLE": "cloudpenny-tenants"
+    },
     "routes": []
   },
   {
     "name": "cloud-penny-saveSnapshot",
+    "path": "billing/saveSnapshot",
     "description": "Triggered by EventBridge on Athena success to save results to DynamoDB",
     "aws_name_override": "cloud-penny-saveSnapshot",
     "handler": "index.handler",
@@ -115,6 +147,7 @@
   },
   {
     "name": "cloud-penny-getDashboardData",
+    "path": "billing/getDashboardData",
     "description": "Get dashboard metrics",
     "aws_name_override": "cloud-penny-getDashboardData",
     "handler": "index.handler",
@@ -125,11 +158,15 @@
       "SNAPSHOTS_TABLE": "cloudpenny-snapshots-dev"
     },
     "routes": [
-      { "method": "GET", "path": "/api/v1/dashboard" }
+      {
+        "method": "GET",
+        "path": "/api/v1/dashboard"
+      }
     ]
   },
   {
     "name": "cloud-penny-getExportFiles",
+    "path": "billing/getExportFiles",
     "description": "List Athena CSV exports for the current tenant with pre-signed download URLs",
     "aws_name_override": "cloud-penny-getExportFiles",
     "handler": "index.handler",
@@ -141,11 +178,15 @@
       "ATHENA_RESULTS_BUCKET": "cloud-penny-athena-results-dev"
     },
     "routes": [
-      { "method": "GET", "path": "/api/v1/exports" }
+      {
+        "method": "GET",
+        "path": "/api/v1/exports"
+      }
     ]
   },
   {
     "name": "cloud-penny-processAnomalyAlert",
+    "path": "alerts/processAnomalyAlert",
     "description": "Triggered by SNS from AWS Cost Anomaly Detection to alert users",
     "aws_name_override": "cloud-penny-processAnomalyAlert",
     "handler": "index.handler",
@@ -161,6 +202,7 @@
   },
   {
     "name": "cloud-penny-getAlerts",
+    "path": "alerts/getAlerts",
     "description": "Fetch anomaly alerts for the tenant",
     "aws_name_override": "cloud-penny-getAlerts",
     "handler": "index.handler",
@@ -171,11 +213,15 @@
       "ALERTS_TABLE": "cloudpenny-alerts-dev"
     },
     "routes": [
-      { "method": "GET", "path": "/api/v1/alerts" }
+      {
+        "method": "GET",
+        "path": "/api/v1/alerts"
+      }
     ]
   },
   {
     "name": "cloud-penny-chat-handler",
+    "path": "chat/chat-handler",
     "description": "Handler for Penny AI chat endpoint using Groq",
     "aws_name_override": "cloud-penny-chat-handler",
     "handler": "index.handler",
@@ -188,11 +234,15 @@
       "GROQ_MODEL_ID": "openai/gpt-oss-120b"
     },
     "routes": [
-      { "method": "POST", "path": "/api/v1/chat" }
+      {
+        "method": "POST",
+        "path": "/api/v1/chat"
+      }
     ]
   },
   {
     "name": "cloud-penny-createConversation",
+    "path": "support/createConversation",
     "description": "Create a new support conversation and relay the first message to Telegram",
     "aws_name_override": "cloud-penny-createConversation",
     "handler": "index.handler",
@@ -206,11 +256,15 @@
       "TELEGRAM_CHAT_ID": "-5586306781"
     },
     "routes": [
-      { "method": "POST", "path": "/api/v1/support/conversations" }
+      {
+        "method": "POST",
+        "path": "/api/v1/support/conversations"
+      }
     ]
   },
   {
     "name": "cloud-penny-sendSupportMessage",
+    "path": "support/sendSupportMessage",
     "description": "Send a follow-up message on an OPEN support conversation and relay it to Telegram",
     "aws_name_override": "cloud-penny-sendSupportMessage",
     "handler": "index.handler",
@@ -223,11 +277,15 @@
       "TELEGRAM_CHAT_ID": "-5586306781"
     },
     "routes": [
-      { "method": "POST", "path": "/api/v1/support/conversations/{conversationId}/messages" }
+      {
+        "method": "POST",
+        "path": "/api/v1/support/conversations/{conversationId}/messages"
+      }
     ]
   },
   {
     "name": "cloud-penny-getConversations",
+    "path": "support/getConversations",
     "description": "List the tenant's own support conversations",
     "aws_name_override": "cloud-penny-getConversations",
     "handler": "index.handler",
@@ -238,11 +296,15 @@
       "SUPPORT_TABLE": "cloudpenny-support-dev"
     },
     "routes": [
-      { "method": "GET", "path": "/api/v1/support/conversations" }
+      {
+        "method": "GET",
+        "path": "/api/v1/support/conversations"
+      }
     ]
   },
   {
     "name": "cloud-penny-getConversationMessages",
+    "path": "support/getConversationMessages",
     "description": "Get one support conversation's metadata and full message history",
     "aws_name_override": "cloud-penny-getConversationMessages",
     "handler": "index.handler",
@@ -253,11 +315,15 @@
       "SUPPORT_TABLE": "cloudpenny-support-dev"
     },
     "routes": [
-      { "method": "GET", "path": "/api/v1/support/conversations/{conversationId}/messages" }
+      {
+        "method": "GET",
+        "path": "/api/v1/support/conversations/{conversationId}/messages"
+      }
     ]
   },
   {
     "name": "cloud-penny-resolveConversation",
+    "path": "support/resolveConversation",
     "description": "Client marks their own support conversation resolved, locking it as read-only history",
     "aws_name_override": "cloud-penny-resolveConversation",
     "handler": "index.handler",
@@ -270,11 +336,15 @@
       "TELEGRAM_CHAT_ID": "-5586306781"
     },
     "routes": [
-      { "method": "PUT", "path": "/api/v1/support/conversations/{conversationId}/resolve" }
+      {
+        "method": "PUT",
+        "path": "/api/v1/support/conversations/{conversationId}/resolve"
+      }
     ]
   },
   {
     "name": "cloud-penny-telegramWebhook",
+    "path": "support/telegramWebhook",
     "description": "Public webhook: receives admin replies from the Telegram support group and relays them back to the client",
     "aws_name_override": "cloud-penny-telegramWebhook",
     "handler": "index.handler",
@@ -286,11 +356,16 @@
       "TELEGRAM_SECRET_NAME": "cloudpenny-telegram-bot-dev"
     },
     "routes": [
-      { "method": "POST", "path": "/api/v1/support/telegram-webhook", "public": true }
+      {
+        "method": "POST",
+        "path": "/api/v1/support/telegram-webhook",
+        "public": true
+      }
     ]
   },
   {
     "name": "cloud-penny-authCallback",
+    "path": "auth/authCallback",
     "description": "Exchanges an OAuth authorization code for tokens server-side and sets the httpOnly refresh-token cookie",
     "aws_name_override": "cloud-penny-authCallback",
     "handler": "index.handler",
@@ -304,11 +379,16 @@
       "REFRESH_TOKEN_MAX_AGE_SECONDS": "432000"
     },
     "routes": [
-      { "method": "POST", "path": "/api/v1/auth/callback", "public": true }
+      {
+        "method": "POST",
+        "path": "/api/v1/auth/callback",
+        "public": true
+      }
     ]
   },
   {
     "name": "cloud-penny-authRefresh",
+    "path": "auth/authRefresh",
     "description": "Silently renews an access token from the httpOnly refresh-token cookie",
     "aws_name_override": "cloud-penny-authRefresh",
     "handler": "index.handler",
@@ -321,11 +401,16 @@
       "REFRESH_TOKEN_MAX_AGE_SECONDS": "432000"
     },
     "routes": [
-      { "method": "POST", "path": "/api/v1/auth/refresh", "public": true }
+      {
+        "method": "POST",
+        "path": "/api/v1/auth/refresh",
+        "public": true
+      }
     ]
   },
   {
     "name": "cloud-penny-authLogout",
+    "path": "auth/authLogout",
     "description": "Revokes the refresh token with Cognito and clears the httpOnly session cookie",
     "aws_name_override": "cloud-penny-authLogout",
     "handler": "index.handler",
@@ -337,7 +422,11 @@
       "COGNITO_CLIENT_ID": "r7i8blijl7lh74k6v77uakbfl"
     },
     "routes": [
-      { "method": "POST", "path": "/api/v1/auth/logout", "public": true }
+      {
+        "method": "POST",
+        "path": "/api/v1/auth/logout",
+        "public": true
+      }
     ]
   }
 ]

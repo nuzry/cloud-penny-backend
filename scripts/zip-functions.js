@@ -4,8 +4,11 @@
 /**
  * zip-functions.js
  *
- * Reads infra/functions.json and zips each function folder under functions/<name>/
- * into dist/<name>.zip — ready for Terraform to upload.
+ * Reads infra/functions.json and zips each function's source folder
+ * (functions/<path>/, where <path> defaults to <name> if not set — functions
+ * are grouped into domain subfolders like functions/auth/getClientMe/, so
+ * the on-disk location and the deployed identity are independent) into
+ * dist/<name>.zip — ready for Terraform to upload.
  *
  * Usage:  npm run zip
  *         node scripts/zip-functions.js
@@ -35,7 +38,11 @@ fs.mkdirSync(DIST_DIR, { recursive: true });
 // ── Zip one function ──────────────────────────────────────────
 function zipFunction(fn) {
   return new Promise((resolve, reject) => {
-    const sourceDir  = path.join(FUNCTIONS_DIR, fn.name);
+    // fn.path is the on-disk location (e.g. "auth/getClientMe"); fn.name is
+    // the deployed/Terraform identity and always drives the zip filename —
+    // never the other way around, so moving a function's folder can never
+    // accidentally rename the live Lambda function.
+    const sourceDir  = path.join(FUNCTIONS_DIR, fn.path ?? fn.name);
     const outputPath = path.join(DIST_DIR, `${fn.name}.zip`);
 
     if (!fs.existsSync(sourceDir)) {
@@ -64,8 +71,12 @@ function zipFunction(fn) {
 
     archive.pipe(output);
 
-    // Add all files from the function folder — flat (no parent dir)
-    archive.directory(sourceDir, false);
+    // Add all files from the function folder — flat (no parent dir) — except
+    // test files, which live alongside index.mjs but have no business in the
+    // deployed Lambda package.
+    archive.directory(sourceDir, false, (entry) =>
+      entry.name.endsWith('.test.mjs') ? false : entry
+    );
 
     archive.finalize();
   });

@@ -6,10 +6,16 @@
   "scripts": {
     "zip": "node scripts/zip-functions.js",
     "create": "node scripts/create-function.js",
-    "import:state": "node scripts/import-existing.js"
+    "import:state": "node scripts/import-existing.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
-    "archiver": "^6.0.2"
+    "@vitest/coverage-v8": "^4.1.11",
+    "archiver": "^6.0.2",
+    "aws-sdk-client-mock": "^4.1.0",
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=20.0.0"

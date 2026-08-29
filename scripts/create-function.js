@@ -8,14 +8,19 @@
  *
  * Usage:
  *   npm run create -- <function-name>
+ *   npm run create -- <domain>/<function-name>
  *   node scripts/create-function.js <function-name>
  *
- * Example:
+ * Examples:
  *   node scripts/create-function.js payments-create
+ *   node scripts/create-function.js billing/payments-create
  *
  * What it does:
- *   1. Creates functions/<name>/index.mjs from a template
- *   2. Appends a new entry to infra/functions.json
+ *   1. Creates functions/[<domain>/]<name>/index.mjs from a template
+ *   2. Appends a new entry to infra/functions.json (with "path" set when a
+ *      domain was given, so the function lands in the right subfolder
+ *      alongside its siblings — see functions/auth|aws-connection|billing|
+ *      alerts|chat|support for the existing groupings)
  *   3. Prints next steps
  */
 
@@ -27,13 +32,20 @@ const FUNCTIONS_DIR = path.join(ROOT, 'functions');
 const CONFIG_PATH   = path.join(ROOT, 'infra', 'functions.json');
 
 // ── Validate input ───────────────────────────────────────────
-const fnName = process.argv[2];
+const rawArg = process.argv[2];
 
-if (!fnName) {
-  console.error('\n❌  Usage: node scripts/create-function.js <function-name>');
-  console.error('    Example: node scripts/create-function.js payments-create\n');
+if (!rawArg) {
+  console.error('\n❌  Usage: node scripts/create-function.js [<domain>/]<function-name>');
+  console.error('    Example: node scripts/create-function.js billing/payments-create\n');
   process.exit(1);
 }
+
+// Optional "<domain>/<name>" shape — domain is just a subfolder under
+// functions/, it never affects the deployed function name (fnName is the
+// Terraform/AWS identity either way).
+const slashIdx = rawArg.indexOf('/');
+const domain = slashIdx === -1 ? null : rawArg.slice(0, slashIdx);
+const fnName = slashIdx === -1 ? rawArg : rawArg.slice(slashIdx + 1);
 
 if (!/^[a-z][a-z0-9-]*$/.test(fnName)) {
   console.error('\n❌  Function name must be lowercase letters, numbers, and hyphens.');
@@ -42,7 +54,14 @@ if (!/^[a-z][a-z0-9-]*$/.test(fnName)) {
   process.exit(1);
 }
 
-const functionDir = path.join(FUNCTIONS_DIR, fnName);
+if (domain !== null && !/^[a-z][a-z0-9-]*$/.test(domain)) {
+  console.error('\n❌  Domain must be lowercase letters, numbers, and hyphens.');
+  console.error('    Valid:   billing, aws-connection\n');
+  process.exit(1);
+}
+
+const relativePath = domain ? `${domain}/${fnName}` : fnName;
+const functionDir = path.join(FUNCTIONS_DIR, relativePath);
 
 if (fs.existsSync(functionDir)) {
   console.error(`\n❌  Function "${fnName}" already exists at:\n    ${functionDir}\n`);
@@ -106,7 +125,7 @@ try {
   process.exit(1);
 }
 
-functions.push({
+const entry = {
   name:             fnName,
   description:      `TODO: describe ${fnName}`,
   aws_name_override: null,
@@ -115,7 +134,13 @@ functions.push({
   timeout:          10,
   environment:      {},
   routes:           [],  // Add routes here: { "method": "GET", "path": "/api/v1/..." }
-});
+};
+// Only set "path" when it actually differs from "name" — zip-functions.js
+// falls back to fn.name when "path" is absent, so this keeps entries for
+// ungrouped functions exactly as terse as they'd otherwise be.
+if (domain) entry.path = relativePath;
+
+functions.push(entry);
 
 fs.writeFileSync(CONFIG_PATH, JSON.stringify(functions, null, 2) + '\n');
 
@@ -123,8 +148,8 @@ fs.writeFileSync(CONFIG_PATH, JSON.stringify(functions, null, 2) + '\n');
 console.log(`
 ✅  Created function: ${fnName}
 
-   📁  functions/${fnName}/index.mjs   ← implement your logic here
-   📋  infra/functions.json           ← route definitions added (empty for now)
+   📁  functions/${relativePath}/index.mjs   ← implement your logic here
+   📋  infra/functions.json                 ← route definitions added (empty for now)
 
 👉  Next steps:
    1. Add routes to the "${fnName}" entry in infra/functions.json:
