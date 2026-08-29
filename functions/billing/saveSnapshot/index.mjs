@@ -61,6 +61,12 @@ export const handler = async (event) => {
     const queryState = execRes.QueryExecution?.Status?.State;
     const queryStr = execRes.QueryExecution?.Query || "";
     const outputLocation = execRes.QueryExecution?.ResultConfiguration?.OutputLocation || "N/A";
+    // When this query was actually submitted to Athena — used below as a
+    // monotonic ordering guard on the MONTH# rollup write, since two
+    // saveSnapshot invocations can run concurrently (e.g. two CUR file drops
+    // close together) and finish in a different order than they started in.
+    const submittedAt = execRes.QueryExecution?.Status?.SubmissionDateTime;
+    const submittedAtIso = submittedAt ? new Date(submittedAt).toISOString() : new Date().toISOString();
 
     console.log(`[STEP 2] Query State: ${queryState}`);
     console.log(`[STEP 2] Output Location: ${outputLocation}`);
@@ -313,32 +319,54 @@ export const handler = async (event) => {
     // 7. Upsert the MONTH# rollup — small (bounded by distinct service count +
     // up to 31 daily totals), kept for the AI tools that already read this
     // shape (getMonthlySpend, getSpendByService, compareSpendPeriods, etc).
+    //
+    // Guarded by submittedAt: two saveSnapshot invocations for the same
+    // tenant/month can run concurrently (e.g. two CUR file drops close
+    // together each trigger their own Athena query), and DynamoDB gives no
+    // ordering guarantee on which UpdateCommand lands last. Without this
+    // guard, an invocation for an OLDER, less-complete query could finish
+    // AFTER a newer one and silently overwrite the MONTH# rollup with stale
+    // data — exactly the bug that made getSpendByService report the wrong
+    // top service: the DAY# items (written per-date, so they can't collide)
+    // stayed correct while the MONTH# rollup regressed to an earlier query's
+    // numbers. The per-day items were never wrong; only this shared key was.
     console.log(`[STEP 7] Writing MONTH#${inferredMonth} rollup to ${SNAPSHOTS_TABLE}...`);
 
-    await dynamo.send(new UpdateCommand({
-      TableName: SNAPSHOTS_TABLE,
-      Key: { tenantId, snapshotId: `MONTH#${inferredMonth}` },
-      UpdateExpression: `
-        SET totalCost = :tc,
-            currency = :cur,
-            services = :svc,
-            regions = :rgn,
-            dailyTotals = :dt,
-            dayCount = :dc,
-            updatedAt = :ua,
-            awsAccountId = :acc
-      `,
-      ExpressionAttributeValues: {
-        ":tc": round(monthTotalCost),
-        ":cur": "USD",
-        ":svc": roundedMonthServices,
-        ":rgn": roundedMonthRegions,
-        ":dt": dailyTotals,
-        ":dc": dayItems.length,
-        ":ua": new Date().toISOString(),
-        ":acc": awsAccountId
+    try {
+      await dynamo.send(new UpdateCommand({
+        TableName: SNAPSHOTS_TABLE,
+        Key: { tenantId, snapshotId: `MONTH#${inferredMonth}` },
+        UpdateExpression: `
+          SET totalCost = :tc,
+              currency = :cur,
+              services = :svc,
+              regions = :rgn,
+              dailyTotals = :dt,
+              dayCount = :dc,
+              updatedAt = :ua,
+              awsAccountId = :acc,
+              lastQuerySubmittedAt = :qsa
+        `,
+        ConditionExpression: "attribute_not_exists(lastQuerySubmittedAt) OR :qsa > lastQuerySubmittedAt",
+        ExpressionAttributeValues: {
+          ":tc": round(monthTotalCost),
+          ":cur": "USD",
+          ":svc": roundedMonthServices,
+          ":rgn": roundedMonthRegions,
+          ":dt": dailyTotals,
+          ":dc": dayItems.length,
+          ":ua": new Date().toISOString(),
+          ":acc": awsAccountId,
+          ":qsa": submittedAtIso
+        }
+      }));
+    } catch (err) {
+      if (err.name === "ConditionalCheckFailedException") {
+        console.log(`[STEP 7 SKIP] A MONTH#${inferredMonth} rollup from a more recently submitted query already exists — not overwriting it with this older result.`);
+      } else {
+        throw err;
       }
-    }));
+    }
 
     console.log(`[STEP 7 OK] MONTH#${inferredMonth} rollup saved.`);
     console.log(`=== saveSnapshot Lambda COMPLETE for tenant ${tenantId} ===`);

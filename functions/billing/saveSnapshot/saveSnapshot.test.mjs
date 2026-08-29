@@ -74,6 +74,33 @@ describe('saveSnapshot', () => {
     const monthCall = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
     expect(monthCall.Key.snapshotId).toBe('MONTH#2026-08');
     expect(monthCall.ExpressionAttributeValues[':tc']).toBeCloseTo(5.75, 6);
+    // The MONTH# write must be guarded so an older, less-complete query
+    // can't win a race against a newer one and clobber the rollup.
+    expect(monthCall.ConditionExpression).toMatch(/lastQuerySubmittedAt/);
+  });
+
+  // Regression test for the bug this guard fixes: getSpendByService reported
+  // a near-zero service as "top" because a slow, older-query saveSnapshot
+  // invocation finished after a newer one and overwrote MONTH# with stale
+  // data, even though the per-day items (written per-date, so they can't
+  // collide) stayed correct the whole time.
+  it('does not overwrite the MONTH# rollup when a newer query has already written one (out-of-order finish)', async () => {
+    athenaMock.on(GetQueryExecutionCommand).resolves({
+      QueryExecution: {
+        Query: queryStringWithTags('tenant-123', '222222222222', '2026-08'),
+        Status: { SubmissionDateTime: new Date('2026-08-29T10:00:00Z') }, // older query, submitted first
+      },
+    });
+    athenaMock.on(GetQueryResultsCommand).resolves({
+      ResultSet: { Rows: [{ Data: [] }, row('AmazonEC2', 'RunInstances', 'us-east-1', 'Usage', '2026-08-01', 1, 1)] },
+    });
+    ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+
+    const conditionalError = Object.assign(new Error('The conditional request failed'), { name: 'ConditionalCheckFailedException' });
+    ddbMock.on(UpdateCommand).rejects(conditionalError);
+
+    // Should not throw — a lost race is an expected, silent no-op, not a failure.
+    await expect(handler(bridgeEvent())).resolves.not.toThrow();
   });
 
   it('retries BatchWrite when items come back unprocessed, then succeeds', async () => {
