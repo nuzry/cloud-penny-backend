@@ -20,6 +20,9 @@ crash.*.log
 # ── Dist (zipped Lambda artifacts) ─────────────────────────
 dist/
 
+# ── Test coverage reports ───────────────────────────────────
+coverage/
+
 # ── Node ────────────────────────────────────────────────────
 node_modules/
 npm-debug.log*
