@@ -18,6 +18,42 @@ const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 // if the model can't get a satisfying tool result.
 const MAX_TOOL_ITERATIONS = 5;
 
+// How many prior messages to carry as context. The full thread used to be
+// resent on every call with no cap, and since the tool loop can itself fire
+// up to MAX_TOOL_ITERATIONS times per question, a growing conversation could
+// multiply token usage across a single request enough to trip Groq's
+// per-organization tokens-per-minute limit (shared across all API keys in
+// the org, so rotating the key doesn't reset it).
+const MAX_HISTORY_MESSAGES = 10;
+
+// Groq's TPM limit is low enough that a burst of requests (or one long
+// tool-calling loop) can trip it transiently. Groq's own error message names
+// a short wait ("try again in 960ms"); backing off and retrying a couple of
+// times turns a hard failure into a slightly slower answer instead.
+const GROQ_MAX_RETRIES = 3;
+const GROQ_RETRY_BASE_MS = 1000;
+
+async function callGroqWithRetry(payload, apiKey) {
+  for (let attempt = 0; attempt <= GROQ_MAX_RETRIES; attempt++) {
+    const res = await fetch(GROQ_API_URL, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (res.status !== 429 || attempt === GROQ_MAX_RETRIES) {
+      return res;
+    }
+
+    const waitMs = GROQ_RETRY_BASE_MS * 2 ** attempt;
+    console.warn(`[GROQ RATE LIMIT] attempt=${attempt + 1}/${GROQ_MAX_RETRIES + 1} waiting ${waitMs}ms before retry`);
+    await new Promise(r => setTimeout(r, waitMs));
+  }
+}
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type,Authorization",
@@ -75,9 +111,10 @@ export const handler = async (event) => {
     // 2. Format History for Groq's OpenAI-compatible chat-completions API:
     // { role: "system"|"user"|"assistant"|"tool", content: "..." } — a flat
     // string per message, unlike Bedrock Converse's { content: [{text}] }.
+    const trimmedHistory = history.slice(-MAX_HISTORY_MESSAGES);
     const messages = [
       { role: "system", content: systemPrompt },
-      ...history.map(msg => ({
+      ...trimmedHistory.map(msg => ({
         role: msg.sender === 'user' ? 'user' : 'assistant',
         content: msg.text
       })),
@@ -105,25 +142,23 @@ export const handler = async (event) => {
         break;
       }
 
-      const groqRes = await fetch(GROQ_API_URL, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          model: MODEL_ID,
-          messages,
-          tools: toolDefinitions,
-          tool_choice: "auto",
-          temperature: 0.1,
-          max_tokens: 2000
-        })
-      });
+      const groqRes = await callGroqWithRetry({
+        model: MODEL_ID,
+        messages,
+        tools: toolDefinitions,
+        tool_choice: "auto",
+        temperature: 0.1,
+        max_tokens: 2000
+      }, apiKey);
 
       if (!groqRes.ok) {
         const errText = await groqRes.text();
         console.error(`[GROQ ERROR] tenant=${tenantId} status=${groqRes.status}:`, errText);
+        if (groqRes.status === 429) {
+          finalResponse = "Penny AI is getting a lot of questions right now and hit a temporary rate limit. Please try again in a few seconds.";
+          done = true;
+          break;
+        }
         throw new Error(`Groq API error (${groqRes.status})`);
       }
 
