@@ -33,6 +33,36 @@ describe('chat-handler tools', () => {
     });
   });
 
+  describe('getSpendByService', () => {
+    it('reports noData when no snapshot exists for the month', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: undefined });
+      const result = await handleToolUse(ddbMock, TENANT, 'getSpendByService', { month: '2026-08' });
+      expect(result.noData).toBe(true);
+    });
+
+    // Regression test: this tool used to return the raw {service: cost} map
+    // and rely on the model to scan it for the largest value itself, which
+    // produced wrong "top service" answers once costs were small, similarly
+    // sized decimals. Sorting server-side and naming topService directly is
+    // the fix, so this pins the sort order and the topService field.
+    it('sorts services highest cost first and names topService explicitly', async () => {
+      ddbMock.on(GetCommand).resolves({
+        Item: {
+          services: {
+            AWSLambda: 0.000024,
+            AmazonSES: 0.00064,
+            AWSGlue: 0.837172,
+            AmazonS3: 0.014901
+          }
+        }
+      });
+      const result = await handleToolUse(ddbMock, TENANT, 'getSpendByService', { month: '2026-08' });
+      expect(result.services[0].service).toBe('AWSGlue');
+      expect(result.services[result.services.length - 1].service).toBe('AWSLambda');
+      expect(result.topService).toEqual({ service: 'AWSGlue', cost: 0.837172 });
+    });
+  });
+
   describe('getSpendByRegion', () => {
     it('notes when no per-region data is attached to the snapshot', async () => {
       ddbMock.on(GetCommand).resolves({ Item: { totalCost: 10, regions: {} } });
@@ -40,10 +70,11 @@ describe('chat-handler tools', () => {
       expect(result.note).toBeDefined();
     });
 
-    it('returns the region breakdown when present', async () => {
-      ddbMock.on(GetCommand).resolves({ Item: { regions: { 'us-east-1': 80, 'eu-west-1': 20 } } });
+    it('returns the region breakdown sorted highest first, with topRegion named', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: { regions: { 'eu-west-1': 20, 'us-east-1': 80 } } });
       const result = await handleToolUse(ddbMock, TENANT, 'getSpendByRegion', { month: '2026-08' });
-      expect(result.regions['us-east-1']).toBe(80);
+      expect(result.regions[0]).toEqual({ region: 'us-east-1', cost: 80 });
+      expect(result.topRegion.region).toBe('us-east-1');
     });
   });
 
@@ -135,6 +166,57 @@ describe('chat-handler tools', () => {
       });
       const result = await handleToolUse(ddbMock, TENANT, 'getTopOperationsForService', { month: '2026-08', service: 'AmazonEC2' });
       expect(result.noData).toBe(true);
+    });
+  });
+
+  describe('getForecast', () => {
+    it('reports noData when the month has no day items yet', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [] });
+      const result = await handleToolUse(ddbMock, TENANT, 'getForecast', { month: '2026-08' });
+      expect(result.noData).toBe(true);
+    });
+
+    // Pins the exact (spend so far / days elapsed) * days in month formula,
+    // matching the dashboard's own forecast card so the two can't disagree.
+    it('projects month-end spend using (spend so far / days elapsed) * days in month', async () => {
+      ddbMock.on(QueryCommand).resolves({
+        Items: [
+          { date: '2026-08-01', totalCost: 10 },
+          { date: '2026-08-02', totalCost: 10 },
+        ],
+      });
+      const result = await handleToolUse(ddbMock, TENANT, 'getForecast', { month: '2026-08' });
+      expect(result.spendSoFar).toBe(20);
+      expect(result.daysElapsed).toBe(2);
+      expect(result.daysInMonth).toBe(31);
+      expect(result.forecast).toBeCloseTo((20 / 2) * 31, 6);
+    });
+
+    it('defaults to the current month when none is given', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [{ date: '2026-08-01', totalCost: 5 }] });
+      const result = await handleToolUse(ddbMock, TENANT, 'getForecast', {});
+      expect(result.noData).toBeUndefined();
+      expect(result.month).toMatch(/^\d{4}-\d{2}$/);
+    });
+  });
+
+  describe('getRecentAlerts', () => {
+    it('notes when there are no alerts on file', async () => {
+      ddbMock.on(QueryCommand).resolves({ Items: [] });
+      const result = await handleToolUse(ddbMock, TENANT, 'getRecentAlerts', {});
+      expect(result.alerts).toHaveLength(0);
+      expect(result.note).toBeDefined();
+    });
+
+    it('returns alerts newest-first with the limit applied and capped at 20', async () => {
+      ddbMock.on(QueryCommand).resolves({
+        Items: [{ createdAt: '2026-08-20T00:00:00Z', message: 'Spike in AmazonEC2', status: 'UNREAD' }],
+      });
+      const result = await handleToolUse(ddbMock, TENANT, 'getRecentAlerts', { limit: 999 });
+      expect(result.alerts[0].message).toBe('Spike in AmazonEC2');
+      const call = ddbMock.commandCalls(QueryCommand)[0].args[0].input;
+      expect(call.ScanIndexForward).toBe(false);
+      expect(call.Limit).toBe(20);
     });
   });
 });

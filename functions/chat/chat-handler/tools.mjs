@@ -1,6 +1,7 @@
 import { GetCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 
 const SNAPSHOTS_TABLE = process.env.SNAPSHOTS_TABLE || "cloudpenny-snapshots-dev";
+const ALERTS_TABLE = process.env.ALERTS_TABLE || "cloudpenny-alerts-dev";
 
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -116,6 +117,34 @@ export const toolDefinitions = [
   {
     type: "function",
     function: {
+      name: "getForecast",
+      description: "Projects the likely total spend for a month based on the days that already have data, using the same (spend so far ÷ days elapsed) × days in month method as the dashboard's 'Forecasted Month' figure. Use this for 'what will I spend', 'projected cost', or 'end of month estimate' questions. Only meaningful for a month still in progress or one that already has partial data.",
+      parameters: {
+        type: "object",
+        properties: {
+          month: { type: "string", description: "The month to forecast in YYYY-MM format, e.g., '2026-08'. Defaults to the current month if omitted." }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "getRecentAlerts",
+      description: "Returns the tenant's most recent AWS Cost Anomaly Detection alerts (unusual spend events CloudPenny has already flagged), newest first. Use this for 'have there been any anomalies', 'any unusual spending', or 'what alerts have I had' questions - do not use getTopCostDrivers for this, that tool compares two months rather than reporting actual raised alerts.",
+      parameters: {
+        type: "object",
+        properties: {
+          limit: { type: "number", description: "Maximum number of alerts to return, defaults to 5." }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "getTopOperationsForService",
       description: "Drills down into WHY a service costs what it does for a specific month, by returning its highest-cost individual operations (e.g. 'RunInstances', 'DataTransfer-Out') with their region and cost. Use this for 'why is X so expensive' or 'what specifically am I paying for within X' questions, after you already know X is a significant service (e.g. from getSpendByService).",
       parameters: {
@@ -160,6 +189,12 @@ export const handleToolUse = async (docClient, tenantId, toolName, input) => {
 
       case "getTopOperationsForService":
         return await getTopOperationsForService(docClient, tenantId, input.month, input.service);
+
+      case "getForecast":
+        return await getForecast(docClient, tenantId, input.month);
+
+      case "getRecentAlerts":
+        return await getRecentAlerts(docClient, tenantId, input.limit);
 
       default:
         // Surfaced as a normal tool result (not thrown) so the model gets a
@@ -209,9 +244,21 @@ async function getSpendByService(docClient, tenantId, month) {
     return { error: `No cost data found for month ${month}.`, noData: true };
   }
 
+  // Sorted server-side, highest cost first. Earlier this returned the raw
+  // {service: cost} map and relied on the model to scan it and pick the
+  // largest value itself — with several dozen services at fractions of a
+  // cent, that arithmetic was unreliable and produced wrong "top service"
+  // answers (e.g. naming a $0.0006 service as costliest over an $0.84 one).
+  // Sorting here and naming topService explicitly removes that failure mode.
+  const services = Object.entries(data.services || {})
+    .map(([service, cost]) => ({ service, cost: round(cost) }))
+    .sort((a, b) => b.cost - a.cost);
+
   return {
     month,
-    services: data.services
+    currency: data.currency || "USD",
+    services, // already sorted highest to lowest — do not re-sort or re-scan
+    topService: services[0] || null
   };
 }
 
@@ -225,12 +272,18 @@ async function getSpendByRegion(docClient, tenantId, month) {
     return { error: `No cost data found for month ${month}.`, noData: true };
   }
 
-  const regions = data.regions || {};
-  if (Object.keys(regions).length === 0) {
-    return { month, regions: {}, note: "No per-region cost data available for this month (some line items, like taxes or support, aren't tied to a region)." };
+  const regionsMap = data.regions || {};
+  if (Object.keys(regionsMap).length === 0) {
+    return { month, regions: [], note: "No per-region cost data available for this month (some line items, like taxes or support, aren't tied to a region)." };
   }
 
-  return { month, regions };
+  // Sorted server-side for the same reason as getSpendByService — the model
+  // should never have to scan a raw cost map to find the largest value.
+  const regions = Object.entries(regionsMap)
+    .map(([region, cost]) => ({ region, cost: round(cost) }))
+    .sort((a, b) => b.cost - a.cost);
+
+  return { month, regions, topRegion: regions[0] || null };
 }
 
 async function compareSpendPeriods(docClient, tenantId, currentMonth, previousMonth) {
@@ -477,6 +530,65 @@ async function getTopOperationsForService(docClient, tenantId, month, service) {
     note: operations.some(o => o.operation === "Other (aggregated)")
       ? "'Other (aggregated)' groups smaller operations that fell outside the top items tracked for some days — the individual operation names within it aren't available."
       : undefined
+  };
+}
+
+async function getForecast(docClient, tenantId, month) {
+  const targetMonth = (month && MONTH_RE.test(month)) ? month : new Date().toISOString().slice(0, 7);
+
+  // Reuses the DAY# items saveSnapshot already wrote — the same rows the
+  // dashboard's own forecast card is computed from — so the chat answer and
+  // the dashboard figure can never disagree because they read different data.
+  const { Items } = await docClient.send(new QueryCommand({
+    TableName: SNAPSHOTS_TABLE,
+    KeyConditionExpression: "tenantId = :t AND begins_with(snapshotId, :prefix)",
+    ExpressionAttributeValues: { ":t": tenantId, ":prefix": `DAY#${targetMonth}` }
+  }));
+
+  const dayItems = Items || [];
+  if (dayItems.length === 0) {
+    return { error: `No cost data found for month ${targetMonth} yet, so a forecast can't be computed.`, noData: true };
+  }
+
+  const spendSoFar = dayItems.reduce((sum, d) => sum + (d.totalCost || 0), 0);
+  const daysElapsed = dayItems.length;
+  const [yyyy, mm] = targetMonth.split("-").map(Number);
+  const daysInMonth = new Date(Date.UTC(yyyy, mm, 0)).getUTCDate();
+
+  const forecast = (spendSoFar / daysElapsed) * daysInMonth;
+
+  return {
+    month: targetMonth,
+    currency: "USD",
+    spendSoFar: round(spendSoFar),
+    daysElapsed,
+    daysInMonth,
+    forecast: round(forecast)
+  };
+}
+
+async function getRecentAlerts(docClient, tenantId, limit) {
+  const cappedLimit = Math.min(Math.max(Number(limit) || 5, 1), 20);
+
+  const { Items } = await docClient.send(new QueryCommand({
+    TableName: ALERTS_TABLE,
+    KeyConditionExpression: "tenantId = :t",
+    ExpressionAttributeValues: { ":t": tenantId },
+    ScanIndexForward: false, // newest first, same as the Alerts page
+    Limit: cappedLimit
+  }));
+
+  const items = Items || [];
+  if (items.length === 0) {
+    return { alerts: [], note: "No cost anomaly alerts have been raised for this tenant." };
+  }
+
+  return {
+    alerts: items.map(a => ({
+      createdAt: a.createdAt,
+      message: a.message,
+      status: a.status
+    }))
   };
 }
 
