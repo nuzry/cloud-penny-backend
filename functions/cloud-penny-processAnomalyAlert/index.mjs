@@ -58,6 +58,29 @@ export const handler = async (event) => {
         continue;
       }
 
+      // Save the alert to DynamoDB first — this is what makes it show up in
+      // the UI, and it must not depend on (or be lost to) an email failure.
+      // A prior incident: SES rejected an unverified recipient, that error
+      // escaped un-caught, and the DynamoDB write below never ran — so the
+      // anomaly was detected but never appeared on the dashboard.
+      const ALERTS_TABLE = process.env.ALERTS_TABLE ?? "cloudpenny-alerts-dev";
+      const anomalyId = message.anomalies && message.anomalies.length > 0 ? message.anomalies[0].anomalyId : `alert-${Date.now()}`;
+
+      const alertItem = {
+        tenantId: tenant.tenantId,
+        createdAt: new Date().toISOString(),
+        anomalyId: anomalyId,
+        awsAccountId: awsAccountId,
+        message: message,
+        status: "UNREAD"
+      };
+
+      await dynamo.send(new PutCommand({
+        TableName: ALERTS_TABLE,
+        Item: alertItem
+      }));
+      console.log("Alert saved to DynamoDB successfully.");
+
       console.log(`Sending alert to ${recipientEmail} for tenant ${tenant.tenantId}`);
 
       const htmlBody = `
@@ -87,25 +110,6 @@ export const handler = async (event) => {
       } catch (emailErr) {
         console.warn(`Failed to send email to ${recipientEmail}:`, emailErr.message);
       }
-
-      // Save alert to DynamoDB
-      const ALERTS_TABLE = process.env.ALERTS_TABLE ?? "cloudpenny-alerts-dev";
-      const anomalyId = message.anomalies && message.anomalies.length > 0 ? message.anomalies[0].anomalyId : `alert-${Date.now()}`;
-      
-      const alertItem = {
-        tenantId: tenant.tenantId,
-        createdAt: new Date().toISOString(),
-        anomalyId: anomalyId,
-        awsAccountId: awsAccountId,
-        message: message,
-        status: "UNREAD"
-      };
-
-      await dynamo.send(new PutCommand({
-        TableName: ALERTS_TABLE,
-        Item: alertItem
-      }));
-      console.log("Alert saved to DynamoDB successfully.");
 
     } catch (err) {
       console.error("Error processing record:", err);

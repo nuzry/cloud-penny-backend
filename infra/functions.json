@@ -288,5 +288,56 @@
     "routes": [
       { "method": "POST", "path": "/api/v1/support/telegram-webhook", "public": true }
     ]
+  },
+  {
+    "name": "cloud-penny-authCallback",
+    "description": "Exchanges an OAuth authorization code for tokens server-side and sets the httpOnly refresh-token cookie",
+    "aws_name_override": "cloud-penny-authCallback",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 128,
+    "timeout": 10,
+    "environment": {
+      "COGNITO_DOMAIN": "ap-southeast-1ymwin06rf.auth.ap-southeast-1.amazoncognito.com",
+      "COGNITO_CLIENT_ID": "r7i8blijl7lh74k6v77uakbfl",
+      "ALLOWED_REDIRECT_URIS": "http://localhost:5173/,https://d3dcvc1n6lca07.cloudfront.net/,https://d84l1y8p4kdic.cloudfront.net/",
+      "REFRESH_TOKEN_MAX_AGE_SECONDS": "432000"
+    },
+    "routes": [
+      { "method": "POST", "path": "/api/v1/auth/callback", "public": true }
+    ]
+  },
+  {
+    "name": "cloud-penny-authRefresh",
+    "description": "Silently renews an access token from the httpOnly refresh-token cookie",
+    "aws_name_override": "cloud-penny-authRefresh",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 128,
+    "timeout": 10,
+    "environment": {
+      "COGNITO_DOMAIN": "ap-southeast-1ymwin06rf.auth.ap-southeast-1.amazoncognito.com",
+      "COGNITO_CLIENT_ID": "r7i8blijl7lh74k6v77uakbfl",
+      "REFRESH_TOKEN_MAX_AGE_SECONDS": "432000"
+    },
+    "routes": [
+      { "method": "POST", "path": "/api/v1/auth/refresh", "public": true }
+    ]
+  },
+  {
+    "name": "cloud-penny-authLogout",
+    "description": "Revokes the refresh token with Cognito and clears the httpOnly session cookie",
+    "aws_name_override": "cloud-penny-authLogout",
+    "handler": "index.handler",
+    "runtime": "nodejs20.x",
+    "memory": 128,
+    "timeout": 10,
+    "environment": {
+      "COGNITO_DOMAIN": "ap-southeast-1ymwin06rf.auth.ap-southeast-1.amazoncognito.com",
+      "COGNITO_CLIENT_ID": "r7i8blijl7lh74k6v77uakbfl"
+    },
+    "routes": [
+      { "method": "POST", "path": "/api/v1/auth/logout", "public": true }
+    ]
   }
 ]
