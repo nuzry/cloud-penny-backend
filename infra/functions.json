@@ -230,6 +230,8 @@
     "timeout": 30,
     "environment": {
       "TENANTS_TABLE": "cloudpenny-tenants",
+      "SNAPSHOTS_TABLE": "cloudpenny-snapshots-dev",
+      "ALERTS_TABLE": "cloudpenny-alerts-dev",
       "GROQ_SECRET_NAME": "cloudpenny-groq-api-key-dev",
       "GROQ_MODEL_ID": "openai/gpt-oss-120b"
     },
