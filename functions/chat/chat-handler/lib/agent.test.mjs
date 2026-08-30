@@ -117,6 +117,28 @@ describe("agent runtime", () => {
     expect(res.reply).toBe("partial answer");
   });
 
+  it("stops with a usable answer once the wall-clock budget runs out, rather than risking the Lambda's own timeout", async () => {
+    const tools = stubTools();
+    let now = 0;
+    const provider = {
+      name: "slow",
+      complete: async () => {
+        now += 20000; // each call "takes" 20s of wall-clock time
+        return { message: { role: "assistant", tool_calls: [toolCall("queryCosts", {}, `c${now}`)] }, finishReason: "tool_calls", usage: { promptTokens: 0, completionTokens: 0 } };
+      },
+    };
+    const realNow = Date.now;
+    Date.now = () => now;
+
+    try {
+      const res = await runAgent({ ...base, provider, tools, limits: { maxDurationMs: 25000 } });
+      expect(res.stopReason).toBe("time_budget");
+      expect(res.reply).toMatch(/heavy load|try again/i);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
   it("turns provider throttling into a friendly message rather than a 500", async () => {
     const provider = {
       name: "flaky",

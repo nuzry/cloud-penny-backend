@@ -19,6 +19,14 @@ export const DEFAULT_LIMITS = {
   maxTokens: 24000,
   maxHistoryMessages: 10,
   maxMessageChars: 4000,
+  // The handler's own Lambda timeout is 30s. Each iteration can itself spend
+  // several seconds retrying a rate-limited provider call, so without this a
+  // question needing 2+ retried iterations could run past the Lambda's own
+  // timeout — which kills the invocation outright with no reply at all,
+  // instead of the graceful message every other budget in this file
+  // produces. Left with headroom for the handler's own overhead (auth,
+  // DynamoDB reads, response serialisation) around the loop.
+  maxDurationMs: 25000,
 };
 
 export async function runAgent({
@@ -41,6 +49,7 @@ export async function runAgent({
 
   const trace = [];
   const usage = { promptTokens: 0, completionTokens: 0 };
+  const deadline = Date.now() + budget.maxDurationMs;
   let iterations = 0;
   let toolCalls = 0;
 
@@ -50,6 +59,9 @@ export async function runAgent({
     }
     if (usage.promptTokens + usage.completionTokens >= budget.maxTokens) {
       return finish(exhausted("tokens", trace), "token_budget");
+    }
+    if (Date.now() >= deadline) {
+      return finish(exhausted("time", trace), "time_budget");
     }
 
     iterations++;
@@ -144,9 +156,15 @@ export async function runAgent({
 
 function exhausted(kind, trace) {
   const looked = [...new Set(trace.map((t) => t.tool))].join(", ");
+  const label = kind === "tokens" ? "room" : kind === "time" ? "time" : "steps";
+  const hint =
+    kind === "time"
+      ? "Penny is under heavy load right now — try again in a moment."
+      : "try asking about one specific month or service at a time.";
+
   return looked
-    ? `I ran out of ${kind === "tokens" ? "room" : "steps"} while working that out. I checked ${looked} but could not finish the answer — try asking about one specific month or service at a time.`
-    : "I could not work that one out. Try asking about one specific month or service at a time.";
+    ? `I ran out of ${label} while working that out. I checked ${looked} but could not finish the answer — ${hint}`
+    : `I could not work that one out. ${hint[0].toUpperCase()}${hint.slice(1)}`;
 }
 
 /**

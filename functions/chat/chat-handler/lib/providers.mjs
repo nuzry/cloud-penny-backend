@@ -30,8 +30,9 @@ export class GroqProvider {
     apiKey,
     model,
     fetchImpl = fetch,
-    maxRetries = 3,
+    maxRetries = 4,
     baseDelayMs = 1000,
+    maxDelayMs = 8000,
     sleepImpl = sleep,
     temperature = 0.1,
     maxTokens = 2000,
@@ -42,6 +43,7 @@ export class GroqProvider {
     this.fetchImpl = fetchImpl;
     this.maxRetries = maxRetries;
     this.baseDelayMs = baseDelayMs;
+    this.maxDelayMs = maxDelayMs;
     this.sleep = sleepImpl;
     this.temperature = temperature;
     this.maxTokens = maxTokens;
@@ -78,6 +80,14 @@ export class GroqProvider {
    * anywhere in the account can throttle a single user's question. Backing
    * off turns that into a slower answer rather than a failed one. 5xx is
    * retried on the same path since it is equally transient.
+   *
+   * Groq's 429 response carries a `retry-after` header (seconds) and, more
+   * precisely, `x-ratelimit-reset-tokens` — the actual time until the TPM
+   * window has room again. A fixed exponential backoff has no way to know
+   * that number, so it either waits too little (retries fail again) or too
+   * much (a fast-clearing window gets treated like a slow one). Reading the
+   * header and waiting exactly that long turns most "exhausted retries"
+   * failures into a slower but successful answer instead.
    */
   async #post(payload) {
     let lastStatus;
@@ -101,7 +111,7 @@ export class GroqProvider {
       const retryable = res.status === 429 || res.status >= 500;
       if (!retryable || attempt === this.maxRetries) break;
 
-      await this.sleep(this.baseDelayMs * 2 ** attempt);
+      await this.sleep(this.#resolveWaitMs(res, attempt));
     }
 
     if (lastStatus === 429) {
@@ -111,6 +121,40 @@ export class GroqProvider {
       status: lastStatus,
     });
   }
+
+  #resolveWaitMs(res, attempt) {
+    const fallback = Math.min(this.baseDelayMs * 2 ** attempt, this.maxDelayMs);
+    const headers = res.headers;
+    if (!headers?.get) return fallback;
+
+    // `headers.get` returns null when absent, and Number(null) is 0, not
+    // NaN — checked explicitly so a missing header falls through to the
+    // next source instead of resolving to "wait zero milliseconds".
+    const retryAfterRaw = headers.get("retry-after");
+    if (retryAfterRaw != null && retryAfterRaw !== "") {
+      const retryAfter = Number(retryAfterRaw);
+      if (Number.isFinite(retryAfter) && retryAfter >= 0) {
+        return Math.min(retryAfter * 1000, this.maxDelayMs);
+      }
+    }
+
+    const resetTokens = parseGroqDurationMs(headers.get("x-ratelimit-reset-tokens"));
+    if (resetTokens !== null) {
+      return Math.min(resetTokens, this.maxDelayMs);
+    }
+
+    return fallback;
+  }
+}
+
+/** Groq reports rate-limit reset windows as e.g. "1.2s" or "150ms". */
+function parseGroqDurationMs(value) {
+  if (!value) return null;
+  const match = /^([\d.]+)(ms|s)$/.exec(String(value).trim());
+  if (!match) return null;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount)) return null;
+  return match[2] === "s" ? amount * 1000 : amount;
 }
 
 /**
