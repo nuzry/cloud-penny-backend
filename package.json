@@ -9,7 +9,8 @@
     "import:state": "node scripts/import-existing.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "eval:chat": "node evals/chat/run.mjs"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^4.1.11",

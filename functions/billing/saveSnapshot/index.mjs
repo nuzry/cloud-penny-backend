@@ -317,8 +317,9 @@ export const handler = async (event) => {
     console.log(`[STEP 6 OK] Day items written.`);
 
     // 7. Upsert the MONTH# rollup — small (bounded by distinct service count +
-    // up to 31 daily totals), kept for the AI tools that already read this
-    // shape (getMonthlySpend, getSpendByService, compareSpendPeriods, etc).
+    // up to 31 daily totals). The chat query engine reads DAY# items first,
+    // so this rollup is the coarse fallback for months whose day items were
+    // never written, and the source for the availability manifest.
     //
     // Guarded by submittedAt: two saveSnapshot invocations for the same
     // tenant/month can run concurrently (e.g. two CUR file drops close
