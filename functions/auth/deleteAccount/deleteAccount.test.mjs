@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, GetCommand, UpdateCommand, DeleteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, UpdateCommand, DeleteCommand, QueryCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { CognitoIdentityProviderClient, AdminDeleteUserCommand } from '@aws-sdk/client-cognito-identity-provider';
 import { S3Client, GetBucketPolicyCommand, PutBucketPolicyCommand } from '@aws-sdk/client-s3';
 import { handler } from './index.mjs';
@@ -23,6 +23,8 @@ describe('deleteAccount', () => {
     cognitoMock.reset();
     s3Mock.reset();
     s3Mock.on(GetBucketPolicyCommand).rejects({ name: 'NoSuchBucketPolicy' });
+    // Default: no billing history or alerts to clean up.
+    ddbMock.on(QueryCommand).resolves({ Items: [] });
   });
 
   it('returns 401 with no tenant claim', async () => {
@@ -97,6 +99,46 @@ describe('deleteAccount', () => {
       expect(res.statusCode).toBe(500);
       const body = JSON.parse(res.body);
       expect(body.error).toMatch(/cleanup is incomplete/i);
+    });
+
+    it('deletes the tenant\'s billing snapshots and alerts, not just the tenant record', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: {} });
+      ddbMock.on(DeleteCommand).resolves({});
+      ddbMock.on(BatchWriteCommand).resolves({});
+      cognitoMock.on(AdminDeleteUserCommand).resolves({});
+      ddbMock.on(QueryCommand)
+        .callsFake((input) => {
+          if (input.TableName?.includes('snapshots')) {
+            return { Items: [{ tenantId: 'tenant-123', snapshotId: 'DAY#2026-08-01' }] };
+          }
+          if (input.TableName?.includes('alerts')) {
+            return { Items: [{ tenantId: 'tenant-123', createdAt: '2026-08-01T00:00:00Z' }] };
+          }
+          return { Items: [] };
+        });
+
+      const res = await handler(authedEvent());
+      expect(res.statusCode).toBe(200);
+
+      const batchCalls = ddbMock.commandCalls(BatchWriteCommand);
+      expect(batchCalls.length).toBeGreaterThanOrEqual(2);
+
+      const deletedKeys = batchCalls.flatMap((c) =>
+        Object.values(c.args[0].input.RequestItems).flat().map((r) => r.DeleteRequest.Key)
+      );
+      expect(deletedKeys).toContainEqual({ tenantId: 'tenant-123', snapshotId: 'DAY#2026-08-01' });
+      expect(deletedKeys).toContainEqual({ tenantId: 'tenant-123', createdAt: '2026-08-01T00:00:00Z' });
+    });
+
+    it('still deletes the tenant record even if cleaning up billing data fails', async () => {
+      ddbMock.on(GetCommand).resolves({ Item: {} });
+      ddbMock.on(DeleteCommand).resolves({});
+      cognitoMock.on(AdminDeleteUserCommand).resolves({});
+      ddbMock.on(QueryCommand).rejects(new Error('boom'));
+
+      const res = await handler(authedEvent());
+      expect(res.statusCode).toBe(200);
+      expect(ddbMock.commandCalls(DeleteCommand)).toHaveLength(1);
     });
 
     it('removes the matching S3 bucket policy statement when one exists', async () => {

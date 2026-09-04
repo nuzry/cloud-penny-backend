@@ -1,7 +1,7 @@
 // lambdas/deleteAccount/index.js
 import { CognitoIdentityProviderClient, AdminDeleteUserCommand } from "@aws-sdk/client-cognito-identity-provider";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, DeleteCommand, GetCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, DeleteCommand, GetCommand, UpdateCommand, QueryCommand, BatchWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { S3Client, GetBucketPolicyCommand, PutBucketPolicyCommand } from "@aws-sdk/client-s3";
 
 const s3 = new S3Client({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
@@ -9,8 +9,56 @@ const s3 = new S3Client({ region: process.env.AWS_REGION ?? "ap-southeast-1" });
 const cognito = new CognitoIdentityProviderClient({});
 const dynamo  = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" }));
 
-const TABLE       = process.env.TENANTS_TABLE ?? "cloudpenny-tenants";
+const TABLE          = process.env.TENANTS_TABLE ?? "cloudpenny-tenants";
+const SNAPSHOTS_TABLE = process.env.SNAPSHOTS_TABLE ?? "cloudpenny-snapshots-dev";
+const ALERTS_TABLE    = process.env.ALERTS_TABLE ?? "cloudpenny-alerts-dev";
 const USER_POOL_ID = process.env.COGNITO_USER_POOL_ID;
+
+const chunk = (arr, size) => {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+};
+
+// Deletes every item in a (tenantId, sortKeyName) partition. Used to remove a
+// tenant's full billing history and alert history when their account is
+// deleted — previously nothing did this: the tenant row itself was removed,
+// but every DAY#/MONTH# snapshot and every alert was left behind forever
+// (no TTL on either table), an orphaned, unreachable, un-deletable copy of
+// exactly the cost data a user asking to delete their account would expect
+// to be gone too.
+async function deleteAllForTenant(tableName, tenantId, sortKeyName) {
+  let cursor;
+  let deleted = 0;
+
+  do {
+    const res = await dynamo.send(new QueryCommand({
+      TableName: tableName,
+      KeyConditionExpression: "tenantId = :t",
+      ExpressionAttributeValues: { ":t": tenantId },
+      ProjectionExpression: sortKeyName === "tenantId" ? "tenantId" : `tenantId, #sk`,
+      ExpressionAttributeNames: sortKeyName === "tenantId" ? undefined : { "#sk": sortKeyName },
+      ExclusiveStartKey: cursor,
+    }));
+
+    const items = res.Items || [];
+    for (const batch of chunk(items, 25)) {
+      if (batch.length === 0) continue;
+      await dynamo.send(new BatchWriteCommand({
+        RequestItems: {
+          [tableName]: batch.map((item) => ({
+            DeleteRequest: { Key: { tenantId: item.tenantId, [sortKeyName]: item[sortKeyName] } },
+          })),
+        },
+      }));
+      deleted += batch.length;
+    }
+
+    cursor = res.LastEvaluatedKey;
+  } while (cursor);
+
+  return deleted;
+}
 
 const response = (statusCode, body) => ({
   statusCode,
@@ -144,6 +192,23 @@ export const handler = async (event) => {
       console.error("COGNITO_DELETE_ERROR:", err.name, err.message);
       return response(500, { success: false, error: "Failed to delete account — please try again" });
     }
+  }
+
+  // Step 1.5 — Delete the tenant's billing snapshots and cost-anomaly alerts.
+  // Best-effort and non-blocking: Cognito access is already revoked at this
+  // point, so a transient failure here must not trap the user unable to
+  // delete their account. A failure is logged loudly for manual follow-up
+  // rather than silently leaving the data behind (which is exactly the bug
+  // this replaces).
+  try {
+    const snapshotsDeleted = await deleteAllForTenant(SNAPSHOTS_TABLE, tenantId, "snapshotId");
+    const alertsDeleted = await deleteAllForTenant(ALERTS_TABLE, tenantId, "createdAt");
+    console.log(`BILLING_DATA_CLEANED: tenant ${tenantId} — ${snapshotsDeleted} snapshot item(s), ${alertsDeleted} alert item(s) deleted.`);
+  } catch (err) {
+    console.error("BILLING_DATA_CLEANUP_FAILED — MANUAL INTERVENTION MAY BE REQUIRED:", {
+      tenantId,
+      error: err.message,
+    });
   }
 
   // Step 2 — Delete the tenant record from DynamoDB.

@@ -621,7 +621,12 @@ resource "aws_iam_role_policy" "lambda_alerts_dynamo" {
           "dynamodb:GetItem",
           "dynamodb:Scan",
           "dynamodb:Query",
-          "dynamodb:UpdateItem"
+          "dynamodb:UpdateItem",
+          # BatchWriteItem (with DeleteRequest) is needed by deleteAccount to
+          # remove a tenant's alert history when they delete their account —
+          # previously nothing did, leaving every deleted tenant's alerts
+          # orphaned in this table forever.
+          "dynamodb:BatchWriteItem"
         ]
         Effect   = "Allow"
         Resource = aws_dynamodb_table.alerts.arn

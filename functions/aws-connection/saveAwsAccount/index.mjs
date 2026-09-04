@@ -1,5 +1,5 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, UpdateCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
 import { S3Client, GetBucketPolicyCommand, PutBucketPolicyCommand } from "@aws-sdk/client-s3";
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" }));
@@ -24,6 +24,33 @@ const extractTenantId = (event) =>
   event?.requestContext?.authorizer?.claims?.sub ??
   null;
 
+const AWS_ACCOUNT_ID_INDEX = "awsAccountId-index";
+
+// Query the awsAccountId-index GSI for every tenant already registered
+// against this AWS account ID. Nothing previously stopped two different
+// tenants from both registering the same 12-digit AWS account ID — if that
+// happened, a cost anomaly for that account would later be routed by
+// processAnomalyAlert to an arbitrary one of them, potentially emailing one
+// tenant's spending details to a different tenant's inbox.
+async function findTenantsByAwsAccountId(awsAccountId) {
+  const items = [];
+  let cursor;
+
+  do {
+    const res = await dynamo.send(new QueryCommand({
+      TableName: TABLE,
+      IndexName: AWS_ACCOUNT_ID_INDEX,
+      KeyConditionExpression: "awsAccountId = :aid",
+      ExpressionAttributeValues: { ":aid": awsAccountId },
+      ExclusiveStartKey: cursor,
+    }));
+    items.push(...(res.Items || []));
+    cursor = res.LastEvaluatedKey;
+  } while (cursor);
+
+  return items;
+}
+
 export const handler = async (event) => {
   console.log("EVENT_PRINT:", JSON.stringify(event, null, 2));
 
@@ -43,6 +70,22 @@ export const handler = async (event) => {
 
   if (!awsAccountId || !/^\d{12}$/.test(awsAccountId)) {
     return response(400, { success: false, error: "A valid 12-digit AWS Account ID is required" });
+  }
+
+  // 0. Reject if another tenant already owns this AWS Account ID.
+  try {
+    const matches = await findTenantsByAwsAccountId(awsAccountId);
+    const claimedByAnotherTenant = matches.some((t) => t.tenantId !== tenantId);
+    if (claimedByAnotherTenant) {
+      console.warn(`AWS_ACCOUNT_ID_COLLISION: ${awsAccountId} is already connected to a different tenant.`);
+      return response(409, {
+        success: false,
+        error: "This AWS Account ID is already connected to another CloudPenny account. Contact support if you believe this is a mistake."
+      });
+    }
+  } catch (err) {
+    console.error("AWS_ACCOUNT_ID_UNIQUENESS_CHECK_ERROR:", err.message);
+    return response(500, { success: false, error: "Failed to validate account details" });
   }
 
   // 1. Update DynamoDB

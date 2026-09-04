@@ -30,7 +30,9 @@
     "environment": {
       "TENANTS_TABLE": "cloudpenny-tenants",
       "COGNITO_USER_POOL_ID": "ap-southeast-1_yMWin06rf",
-      "CENTRAL_CURS_BUCKET": "cloudpenny-central-curs-dev"
+      "CENTRAL_CURS_BUCKET": "cloudpenny-central-curs-dev",
+      "SNAPSHOTS_TABLE": "cloudpenny-snapshots-dev",
+      "ALERTS_TABLE": "cloudpenny-alerts-dev"
     },
     "routes": [
       {
