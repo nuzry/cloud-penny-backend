@@ -10,8 +10,12 @@ const ddbMock = mockClient(DynamoDBDocumentClient);
 const bridgeEvent = (queryExecutionId = 'q-1') => ({ detail: { queryExecutionId } });
 
 const cell = (v) => ({ VarCharValue: v });
-const row = (service, operation, region, lineItemType, date, usageAmount, cost) => ({
-  Data: [cell(service), cell(operation), cell(region), cell(lineItemType), cell(date), cell(String(usageAmount)), cell(String(cost))],
+const row = (service, operation, region, lineItemType, date, usageAmount, cost, currency) => ({
+  Data: [
+    cell(service), cell(operation), cell(region), cell(lineItemType), cell(date),
+    cell(String(usageAmount)), cell(String(cost)),
+    ...(currency !== undefined ? [cell(currency)] : []),
+  ],
 });
 
 const queryStringWithTags = (tenantId, awsAccountId, billingPeriod) =>
@@ -123,6 +127,50 @@ describe('saveSnapshot', () => {
 
     await handler(bridgeEvent());
     expect(call).toBe(2);
+  });
+
+  it('records the CUR\'s own currency instead of hardcoding USD', async () => {
+    athenaMock.on(GetQueryExecutionCommand).resolves({
+      QueryExecution: { Query: queryStringWithTags('tenant-123', '222222222222', '2026-08') },
+    });
+    athenaMock.on(GetQueryResultsCommand).resolves({
+      ResultSet: {
+        Rows: [
+          { Data: [] },
+          row('AmazonEC2', 'RunInstances', 'eu-west-1', 'Usage', '2026-08-01', 10, 5.5, 'EUR'),
+        ],
+      },
+    });
+    ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+    ddbMock.on(UpdateCommand).resolves({});
+
+    await handler(bridgeEvent());
+
+    const dayItem = ddbMock.commandCalls(BatchWriteCommand)[0].args[0].input
+      .RequestItems['cloudpenny-snapshots-dev'][0].PutRequest.Item;
+    expect(dayItem.currency).toBe('EUR');
+
+    const monthCall = ddbMock.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(monthCall.ExpressionAttributeValues[':cur']).toBe('EUR');
+  });
+
+  it('falls back to USD when the query result has no currency column (legacy/in-flight query)', async () => {
+    athenaMock.on(GetQueryExecutionCommand).resolves({
+      QueryExecution: { Query: queryStringWithTags('tenant-123', '222222222222', '2026-08') },
+    });
+    athenaMock.on(GetQueryResultsCommand).resolves({
+      ResultSet: {
+        Rows: [{ Data: [] }, row('AmazonEC2', 'RunInstances', 'us-east-1', 'Usage', '2026-08-01', 10, 5.5)],
+      },
+    });
+    ddbMock.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
+    ddbMock.on(UpdateCommand).resolves({});
+
+    await handler(bridgeEvent());
+
+    const dayItem = ddbMock.commandCalls(BatchWriteCommand)[0].args[0].input
+      .RequestItems['cloudpenny-snapshots-dev'][0].PutRequest.Item;
+    expect(dayItem.currency).toBe('USD');
   });
 
   it('collapses per-day items beyond the top-40 cap into "Other (aggregated)" rows, keeping per-service totals exact', async () => {

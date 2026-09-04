@@ -58,12 +58,67 @@ describe('processCurUpdate', () => {
     expect(athenaMock.commandCalls(StartQueryExecutionCommand)).toHaveLength(0);
   });
 
-  it('skips when the tenant has already exhausted today\'s quota', async () => {
+  it('skips when the tenant has already exhausted this billing period\'s quota for today, and marks it pending', async () => {
+    const today = new Date().toISOString().split('T')[0];
     ddbMock.on(GetCommand).resolves({
-      Item: { awsAccountId: '222222222222', dailyRefreshQuota: 1, lastRefreshDate: new Date().toISOString().split('T')[0], dailyRefreshesUsed: 1 },
+      Item: { awsAccountId: '222222222222', dailyRefreshQuota: 1, [`refreshDate_2026-08`]: today, [`refreshUsed_2026-08`]: 1 },
     });
+    ddbMock.on(UpdateCommand).resolves({});
+
     await handler(sqsEvent(validKey));
+
     expect(athenaMock.commandCalls(StartQueryExecutionCommand)).toHaveLength(0);
+    const pendingCall = ddbMock.commandCalls(UpdateCommand).find(
+      (c) => c.args[0].input.ExpressionAttributeNames?.['#p'] === 'pendingReprocess_2026-08'
+    );
+    expect(pendingCall).toBeTruthy();
+  });
+
+  it('does not let a fully-used current-month quota starve a correction to a different (older) billing period', async () => {
+    const today = new Date().toISOString().split('T')[0];
+    const oldKey = `${TENANT_ID}/CloudPenny-Export/data/BILLING_PERIOD=2026-07/part-0.snappy.parquet`;
+    ddbMock.on(GetCommand).resolves({
+      Item: {
+        awsAccountId: '222222222222',
+        dailyRefreshQuota: 1,
+        [`refreshDate_2026-08`]: today,
+        [`refreshUsed_2026-08`]: 1, // current month's quota already spent today
+      },
+    });
+    ddbMock.on(UpdateCommand).resolves({});
+    athenaMock.on(StartQueryExecutionCommand).resolves({ QueryExecutionId: 'q-1' });
+
+    // A correction for 2026-07 (a different billing period) arrives the same day.
+    await handler(sqsEvent(oldKey, '2026-08-15T00:00:00Z'));
+
+    const call = athenaMock.commandCalls(StartQueryExecutionCommand)[0]?.args[0].input;
+    expect(call).toBeTruthy();
+    expect(call.QueryString).toContain('--billingPeriod=2026-07');
+  });
+
+  it('catches up a previously pending billing period once quota is available again, using this invocation', async () => {
+    ddbMock.on(GetCommand).resolves({
+      Item: {
+        awsAccountId: '222222222222',
+        dailyRefreshQuota: 5,
+        'pendingReprocess_2026-07': true, // a correction landed for July while quota was exhausted
+      },
+    });
+    ddbMock.on(UpdateCommand).resolves({});
+    athenaMock.on(StartQueryExecutionCommand).resolves({ QueryExecutionId: 'q-1' });
+
+    await handler(sqsEvent(validKey)); // triggers today's normal August event
+
+    const periods = athenaMock.commandCalls(StartQueryExecutionCommand).map(
+      (c) => c.args[0].input.QueryString.match(/--billingPeriod=(\S+)/)[1]
+    );
+    expect(periods).toEqual(expect.arrayContaining(['2026-08', '2026-07']));
+
+    const clearedPending = ddbMock.commandCalls(UpdateCommand).some(
+      (c) => c.args[0].input.UpdateExpression === 'REMOVE #p' &&
+        c.args[0].input.ExpressionAttributeNames?.['#p'] === 'pendingReprocess_2026-07'
+    );
+    expect(clearedPending).toBe(true);
   });
 
   it('throws to trigger an SQS retry when the Glue crawler is still running', async () => {
@@ -97,5 +152,8 @@ describe('processCurUpdate', () => {
     expect(call.QueryString).toContain('--awsAccountId=222222222222');
     expect(call.QueryString).toContain('--billingPeriod=2026-08');
     expect(call.QueryString).toContain("billing_period = '2026-08'");
+    // Surfaces the CUR's own currency instead of leaving saveSnapshot to
+    // hardcode "USD" regardless of what the payer account actually bills in.
+    expect(call.QueryString).toContain('line_item_currency_code');
   });
 });

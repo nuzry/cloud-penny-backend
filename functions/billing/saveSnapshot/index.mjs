@@ -142,6 +142,7 @@ export const handler = async (event) => {
     const byDay = new Map(); // date -> array of { service, operation, region, lineItemType, usageAmount, cost }
     let parseErrors = 0;
     let inferredMonth = billingPeriod;
+    let observedCurrency = null; // set from the CUR's own line_item_currency_code; "USD" is only a last-resort default
 
     for (let i = 0; i < allRows.length; i++) {
       const row = allRows[i].Data;
@@ -152,7 +153,7 @@ export const handler = async (event) => {
         continue;
       }
 
-      // SELECT service, operation, region, line_item_type, usage_date, usage_amount, total_cost
+      // SELECT service, operation, region, line_item_type, usage_date, usage_amount, total_cost, currency_code
       const serviceName = row[0]?.VarCharValue || "Unknown";
       const operation = row[1]?.VarCharValue || "None";
       const region = row[2]?.VarCharValue || "";
@@ -160,6 +161,10 @@ export const handler = async (event) => {
       const usageDate = row[4]?.VarCharValue || ""; // YYYY-MM-DD
       const usageAmount = parseFloat(row[5]?.VarCharValue || "0");
       const cost = parseFloat(row[6]?.VarCharValue || "0");
+      // Column 7 is optional so an in-flight query started just before this
+      // column was added doesn't get its rows dropped by the length check
+      // below — it just contributes nothing to the observed currency.
+      const currencyCode = row[7]?.VarCharValue || "";
 
       if (!usageDate || Math.abs(cost) < COST_EPSILON) {
         continue; // skip undated rows and floating-point dust around zero
@@ -167,6 +172,14 @@ export const handler = async (event) => {
 
       if (!inferredMonth) {
         inferredMonth = usageDate.substring(0, 7); // fallback for a legacy query without the billingPeriod tag
+      }
+
+      // A payer account bills in one currency for its whole account, so the
+      // first non-empty value seen is authoritative — this replaces a
+      // previous hardcoded "USD" that silently mislabeled every non-USD
+      // tenant's numbers.
+      if (!observedCurrency && currencyCode) {
+        observedCurrency = currencyCode;
       }
 
       if (!byDay.has(usageDate)) byDay.set(usageDate, []);
@@ -251,7 +264,7 @@ export const handler = async (event) => {
         snapshotId: `DAY#${date}`,
         date,
         totalCost: round(dayTotal),
-        currency: "USD",
+        currency: observedCurrency || "USD",
         services: roundedServices,
         regions: roundedRegions,
         lineItemTypes: roundedLineItemTypes,
@@ -351,7 +364,7 @@ export const handler = async (event) => {
         ConditionExpression: "attribute_not_exists(lastQuerySubmittedAt) OR :qsa > lastQuerySubmittedAt",
         ExpressionAttributeValues: {
           ":tc": round(monthTotalCost),
-          ":cur": "USD",
+          ":cur": observedCurrency || "USD",
           ":svc": roundedMonthServices,
           ":rgn": roundedMonthRegions,
           ":dt": dailyTotals,

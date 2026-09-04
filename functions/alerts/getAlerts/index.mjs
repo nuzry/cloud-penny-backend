@@ -4,6 +4,11 @@ import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? "ap-southeast-1" }));
 const ALERTS_TABLE = process.env.ALERTS_TABLE ?? "cloudpenny-alerts-dev";
 
+// Unbounded before this — a long-lived, alert-heavy tenant paid for an
+// ever-growing read on every dashboard load. Matches the cap already used
+// elsewhere (repository.mjs's listAlerts/countAlerts) for the same table.
+const MAX_ALERTS_RETURNED = 100;
+
 // Simplified HTTP response helper
 const response = (statusCode, body) => ({
   statusCode,
@@ -34,7 +39,8 @@ export const handler = async (event) => {
       ExpressionAttributeValues: {
         ":tid": tenantId
       },
-      ScanIndexForward: false // Sort by createdAt descending
+      ScanIndexForward: false, // Sort by createdAt descending
+      Limit: MAX_ALERTS_RETURNED
     }));
 
     // 3. Return Alerts
